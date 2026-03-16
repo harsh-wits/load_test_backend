@@ -24,6 +24,8 @@ runs/
 
 .env
 
-fixtures
+fixtures/select_pools/
+fixtures/on_search/
+
 
 .cursor

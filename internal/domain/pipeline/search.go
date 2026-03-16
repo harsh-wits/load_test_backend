@@ -6,5 +6,5 @@ import (
 )
 
 func LoadSearchPayload() ([]byte, error) {
-	return os.ReadFile(filepath.Join("fixtures", "search", "my_search.json"))
+	return os.ReadFile(filepath.Join("fixtures", "search", "search.json"))
 }
