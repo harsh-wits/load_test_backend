@@ -1,0 +1,548 @@
+openapi: 3.0.3
+info:
+  title: Seller Load Tester API
+  version: 3.0.0
+  description: >
+    Multi-tenant, session-based ONDC load testing platform.
+    Each BPP team creates a session, runs discovery to fetch the catalog,
+    then triggers preorder load tests scoped to that session.
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: Service is healthy
+
+  /sessions:
+    get:
+      summary: List sessions by BPP (paginated)
+      description: >
+        Returns sessions (active, expired) for a given BPP,
+        sorted by created_at descending with pagination.
+      parameters:
+        - name: bpp_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+          description: Page number (1-indexed)
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+          description: Number of sessions per page
+      responses:
+        '200':
+          description: Paginated list of sessions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedSessions'
+        '400':
+          description: Missing bpp_id query parameter
+    delete:
+      summary: Permanently delete all sessions for a BPP
+      description: >
+        Permanently deletes all sessions, their runs, and catalogs for a given BPP ID.
+        Also removes the active session from Redis if one exists.
+      parameters:
+        - name: bpp_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Number of sessions deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: integer
+        '400':
+          description: Missing bpp_id query parameter
+    post:
+      summary: Create a new session
+      description: >
+        Creates an isolated testing session for a BPP.
+        Only one active session per BPP is allowed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSessionRequest'
+      responses:
+        '201':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '409':
+          description: Active session already exists for this BPP
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /sessions/{id}:
+    get:
+      summary: Get session state
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+      responses:
+        '200':
+          description: Session state with catalog and preorder status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session:
+                    $ref: '#/components/schemas/Session'
+                  catalog:
+                    $ref: '#/components/schemas/CatalogState'
+                  preorder:
+                    $ref: '#/components/schemas/PreorderState'
+        '404':
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Permanently delete a session
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+      responses:
+        '204':
+          description: Session deleted
+        '404':
+          description: Session not found
+
+  /sessions/{id}/discovery/payload:
+    get:
+      summary: Generate default search payload
+      description: >
+        Returns a generated search payload template and the BPP URI
+        for the session. The caller can review/edit it before sending via
+        POST /sessions/{id}/discovery.
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+      responses:
+        '200':
+          description: Generated search payload
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  payload:
+                    type: object
+                    description: Default search payload JSON
+                  bpp_uri:
+                    type: string
+        '404':
+          description: Session not found
+
+  /sessions/{id}/discovery:
+    post:
+      summary: Run synchronous discovery
+      description: >
+        Sends /search to the session's BPP, waits synchronously for the
+        on_search callback via Redis polling (up to DISCOVERY_WAIT_TTL_SECONDS),
+        saves the catalog, and returns the on_search payload in the response.
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                payload:
+                  type: object
+                  description: Search payload to send to BPP (optional; uses default if omitted)
+      responses:
+        '200':
+          description: Discovery complete, catalog ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                  search_ack:
+                    type: boolean
+                  on_search:
+                    type: object
+                    description: Full on_search callback payload from the BPP
+                  catalog_status:
+                    type: string
+                    enum: [ready]
+        '409':
+          description: Discovery already in progress (catalog pending)
+        '502':
+          description: BPP returned NACK or search request failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: Timed out waiting for on_search callback
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /sessions/{id}/catalog:
+    put:
+      summary: Upload on_search payload as catalog
+      description: >
+        Accepts a raw on_search payload and saves it as the session catalog,
+        bypassing the discovery flow entirely. Sets catalog status to ready.
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadCatalogRequest'
+      responses:
+        '200':
+          description: Catalog saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                  catalog_status:
+                    type: string
+                    enum: [ready]
+        '400':
+          description: Invalid or missing on_search payload
+        '404':
+          description: Session not found
+
+  /sessions/{id}/preorder:
+    post:
+      summary: Start preorder load test
+      description: >
+        Generates select payloads from the stored catalog, runs
+        select -> init -> confirm stages with rate limiting.
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreorderRequest'
+      responses:
+        '202':
+          description: Preorder run started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id:
+                    type: string
+                  session_id:
+                    type: string
+        '409':
+          description: A run is already active
+        '422':
+          description: Catalog not ready
+
+  /sessions/{id}/runs:
+    get:
+      summary: List all runs for a session
+      description: >
+        Returns all runs for the specified session sorted by started_at descending.
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+      responses:
+        '200':
+          description: List of runs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Run'
+        '404':
+          description: Session not found
+
+  /sessions/{id}/runs/{run_id}:
+    get:
+      summary: Poll run progress and metrics
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+        - $ref: '#/components/parameters/RunID'
+      responses:
+        '200':
+          description: Run details with per-action metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+        '404':
+          description: Run not found
+
+  /sessions/{id}/runs/{run_id}/stop:
+    post:
+      summary: Force stop a running test
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+        - $ref: '#/components/parameters/RunID'
+      responses:
+        '200':
+          description: Run stop requested
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stopped_run_id:
+                    type: string
+        '404':
+          description: No active run to stop
+
+  /sessions/{id}/report:
+    get:
+      summary: Download aggregated CSV report
+      description: >
+        Fetches all runs for the session, aggregates metrics across all runs
+        into a CSV with rows per stage (select, on_select, init, on_init,
+        confirm, on_confirm) and columns: stage, total_sent, total_success,
+        total_failure, total_timeout, run_count. Returns as a CSV attachment.
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+      responses:
+        '200':
+          description: CSV report
+          content:
+            text/csv:
+              schema:
+                type: string
+        '404':
+          description: Session not found
+
+  /on_search:
+    post:
+      summary: Callback - on_search
+      responses:
+        '200':
+          description: Acknowledged
+  /on_select:
+    post:
+      summary: Callback - on_select
+      responses:
+        '200':
+          description: Acknowledged
+  /on_init:
+    post:
+      summary: Callback - on_init
+      responses:
+        '200':
+          description: Acknowledged
+  /on_confirm:
+    post:
+      summary: Callback - on_confirm
+      responses:
+        '200':
+          description: Acknowledged
+
+components:
+  parameters:
+    SessionID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    RunID:
+      name: run_id
+      in: path
+      required: true
+      schema:
+        type: string
+
+  schemas:
+    CreateSessionRequest:
+      type: object
+      required: [bpp_id, bpp_uri]
+      properties:
+        bpp_id:
+          type: string
+        bpp_uri:
+          type: string
+
+    Session:
+      type: object
+      properties:
+        id:
+          type: string
+        bpp_id:
+          type: string
+        bpp_uri:
+          type: string
+        status:
+          type: string
+          enum: [active, expired]
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+
+    CatalogState:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [none, pending, ready, failed]
+        on_search_id:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+
+    PreorderState:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [idle, running, stopping]
+        active_run_id:
+          type: string
+
+    PreorderRequest:
+      type: object
+      properties:
+        rps:
+          type: integer
+          description: Requests per second (batch_size = rps * duration_sec)
+        duration_sec:
+          type: integer
+          description: Duration in seconds
+        transaction_id:
+          type: string
+          description: >
+            Optional. When provided, all select/init/confirm payloads in the run
+            share this single transaction_id instead of generating one per payload.
+
+    UploadCatalogRequest:
+      type: object
+      required: [on_search]
+      properties:
+        on_search:
+          type: object
+          description: Full on_search callback payload to use as the session catalog
+
+    Run:
+      type: object
+      properties:
+        id:
+          type: string
+        session_id:
+          type: string
+        bpp_id:
+          type: string
+        rps:
+          type: integer
+        duration_sec:
+          type: integer
+        status:
+          type: string
+          enum: [running, stopping, completed, failed]
+        metrics:
+          $ref: '#/components/schemas/RunMetrics'
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+
+    RunMetrics:
+      type: object
+      properties:
+        select:
+          $ref: '#/components/schemas/ActionMetrics'
+        on_select:
+          $ref: '#/components/schemas/ActionMetrics'
+        init:
+          $ref: '#/components/schemas/ActionMetrics'
+        on_init:
+          $ref: '#/components/schemas/ActionMetrics'
+        confirm:
+          $ref: '#/components/schemas/ActionMetrics'
+        on_confirm:
+          $ref: '#/components/schemas/ActionMetrics'
+
+    ActionMetrics:
+      type: object
+      properties:
+        sent:
+          type: integer
+        success:
+          type: integer
+        failure:
+          type: integer
+        timeout:
+          type: integer
+
+    PaginatedSessions:
+      type: object
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Session'
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total:
+          type: integer
+          description: Total number of sessions matching the BPP ID
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: object
+        timestamp:
+          type: string
+          format: date-time
