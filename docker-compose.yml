@@ -1,36 +1,8 @@
 services:
-  redis:
-    image: redis:7-alpine
-    container_name: seller-load-tester-redis
-    ports:
-      - "6380:6379"
-    command: ["redis-server", "--appendonly", "yes"]
-
-  mongo:
-    image: mongo:7
-    container_name: seller-load-tester-mongo
-    ports:
-      - "27018:27017"
-    volumes:
-      - mongo-data:/data/db
-
   app:
     build: .
     container_name: seller-load-tester-app
-    depends_on:
-      - redis
-      - mongo
-    environment:
-      - HTTP_PORT=8080
-      - REDIS_URL=seller-load-tester-redis:6379
-      - MONGO_URI=mongodb://seller-load-tester-mongo:27017
-      - MONGO_DB=load_tester
     env_file:
       - .env
     ports:
-      - "8080:8080"
-    volumes:
-      - ./runs:/app/runs
-
-volumes:
-  mongo-data:
+      - "${HTTP_PORT:-8080}:8080"

@@ -15,13 +15,25 @@ Multi-tenant, session-based ONDC seller app load tester acting as a BAP simulato
 
 ### Running locally
 
+#### Minimal app only (external Redis/Mongo)
+
 ```bash
 cp .env.example .env
-# edit .env as needed
+# edit .env as needed (point REDIS_URL / MONGO_URI to your infra)
 docker compose up --build
 ```
 
 The app will be available on `http://localhost:8080`.
+
+#### Full local stack (app + Redis + Mongo)
+
+```bash
+cp .env.example .env
+# uses defaults: REDIS_URL=seller-load-tester-redis:6379, MONGO_URI=mongodb://seller-load-tester-mongo:27017
+docker compose -f docker-compose.local.yml up --build
+```
+
+This starts Redis and Mongo alongside the app for a fully self-contained local environment.
 
 ### Workflow
 
