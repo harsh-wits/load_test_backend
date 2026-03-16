@@ -27,12 +27,13 @@ const (
 )
 
 type Session struct {
-	ID        string        `json:"id" bson:"_id"`
-	BPPID     string        `json:"bpp_id" bson:"bpp_id"`
-	BPPURI    string        `json:"bpp_uri" bson:"bpp_uri"`
-	Status    SessionStatus `json:"status" bson:"status"`
-	CreatedAt time.Time     `json:"created_at" bson:"created_at"`
-	ExpiresAt time.Time     `json:"expires_at" bson:"expires_at"`
+	ID          string        `json:"id" bson:"_id"`
+	BPPID       string        `json:"bpp_id" bson:"bpp_id"`
+	BPPURI      string        `json:"bpp_uri" bson:"bpp_uri"`
+	Status      SessionStatus `json:"status" bson:"status"`
+	CreatedAt   time.Time     `json:"created_at" bson:"created_at"`
+	ExpiresAt   time.Time     `json:"expires_at" bson:"expires_at"`
+	CoreVersion string        `json:"core_version,omitempty" bson:"core_version,omitempty"`
 }
 
 type CatalogState struct {

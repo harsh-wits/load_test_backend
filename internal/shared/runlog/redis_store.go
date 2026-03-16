@@ -26,11 +26,11 @@ func NewRedisStore(client redis.Client, ttlSeconds int) *RedisStore {
 }
 
 func (s *RedisStore) hashKey(runID, pipeline, action string) string {
-	return fmt.Sprintf("run:%s:%s:%s", runID, pipeline, action)
+	return fmt.Sprintf("runlog:%s:%s:%s", runID, pipeline, action)
 }
 
 func (s *RedisStore) counterKey(runID, pipeline, action string) string {
-	return fmt.Sprintf("run:%s:count:%s:%s", runID, pipeline, action)
+	return fmt.Sprintf("runlog:%s:count:%s:%s", runID, pipeline, action)
 }
 
 func (s *RedisStore) Record(runID, pipeline, action, transactionID string, payload []byte) error {
@@ -104,7 +104,7 @@ func (s *RedisStore) FlushToFilesystem(runID, rootDir string) error {
 		"pipeline_b:confirm", "pipeline_b:on_confirm",
 	}
 	for _, pa := range actions {
-		hk := fmt.Sprintf("run:%s:%s", runID, pa)
+		hk := fmt.Sprintf("runlog:%s:%s", runID, pa)
 		all, err := s.client.HGetAll(ctx, hk)
 		if err != nil || len(all) == 0 {
 			continue
@@ -129,7 +129,7 @@ func (s *RedisStore) FlushToFilesystem(runID, rootDir string) error {
 
 func (s *RedisStore) Cleanup(runID string) {
 	ctx := context.Background()
-	_ = s.client.DelPattern(ctx, fmt.Sprintf("run:%s:*", runID))
+	_ = s.client.DelPattern(ctx, fmt.Sprintf("runlog:%s:*", runID))
 }
 
 func (s *RedisStore) Export(runID string, fn func(pipeline, action, txnID string, payload []byte) error) error {
@@ -138,14 +138,14 @@ func (s *RedisStore) Export(runID string, fn func(pipeline, action, txnID string
 	}
 	ctx := context.Background()
 
-	pattern := fmt.Sprintf("run:%s:*:*", runID)
+	pattern := fmt.Sprintf("runlog:%s:*:*", runID)
 	keys, err := s.client.Keys(ctx, pattern)
 	if err != nil {
 		return err
 	}
 	for _, key := range keys {
 		var run, pipeline, action string
-		if _, err := fmt.Sscanf(key, "run:%s:%s:%s", &run, &pipeline, &action); err != nil || run != runID {
+		if _, err := fmt.Sscanf(key, "runlog:%s:%s:%s", &run, &pipeline, &action); err != nil || run != runID {
 			continue
 		}
 		all, err := s.client.HGetAll(ctx, key)

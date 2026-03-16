@@ -98,7 +98,7 @@ This starts Redis and Mongo alongside the app for a fully self-contained local e
 |-----|-------------|
 | `BAP_ID` | BAP subscriber ID |
 | `BAP_URI` | BAP callback URL |
-| `CORE_VERSION` | ONDC core version |
+| `CORE_VERSION` | Default ONDC core version (can be overridden per session via `core_version` in `POST /sessions`) |
 | `BAP_PRIVATE_KEY` | Base64 Ed25519 private key for signing (empty = no signing) |
 | `BAP_PUBLIC_KEY` | Base64 Ed25519 public key for verification |
 | `BAP_UNIQUE_KEY_ID` | Key ID for the `Signature keyId` field |

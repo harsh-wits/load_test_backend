@@ -98,8 +98,9 @@ func (c *Controller) listSessions(ctx *fiber.Ctx) error {
 }
 
 type createSessionRequest struct {
-	BPPID  string `json:"bpp_id"`
-	BPPURI string `json:"bpp_uri"`
+	BPPID       string  `json:"bpp_id"`
+	BPPURI      string  `json:"bpp_uri"`
+	CoreVersion *string `json:"core_version"`
 }
 
 func (c *Controller) createSession(ctx *fiber.Ctx) error {
@@ -111,7 +112,21 @@ func (c *Controller) createSession(ctx *fiber.Ctx) error {
 		return apierror.NewCustomError(400, "REQUIRED_FIELDS_4001", "bpp_id and bpp_uri are required")
 	}
 
-	sess, err := c.sessions.Create(ctx.Context(), req.BPPID, req.BPPURI)
+	coreVersion := ""
+	if req.CoreVersion != nil {
+		coreVersion = session.NormalizeCoreVersion(*req.CoreVersion)
+		if coreVersion != "" && !session.IsValidCoreVersion(coreVersion) {
+			return apierror.NewCustomError(400, "INVALID_CORE_VERSION", "core_version must be either 1.2.0 or 1.2.5")
+		}
+	}
+	if coreVersion == "" {
+		coreVersion = session.NormalizeCoreVersion(c.cfg.CoreVersion)
+		if !session.IsValidCoreVersion(coreVersion) {
+			return apierror.NewCustomError(500, "INVALID_CORE_VERSION_CONFIG", "CORE_VERSION in configuration is not supported")
+		}
+	}
+
+	sess, err := c.sessions.Create(ctx.Context(), req.BPPID, req.BPPURI, coreVersion)
 	if err != nil {
 		return err
 	}
@@ -362,6 +377,7 @@ func (c *Controller) startPreorder(ctx *fiber.Ctx) error {
 		_ = c.sessions.LinkTxn(context.Background(), txnID, runID, sess.ID)
 	})
 	c.coordinator.SetThrottle(c.rateLimiter, sess.ID)
+	c.coordinator.SetCoreVersion(sess.CoreVersion)
 
 	log.Printf("[preorder] starting session=%s run=%s batch=%d max_in_flight=%d",
 		sess.ID, run.ID, batchSize, maxInFlight)

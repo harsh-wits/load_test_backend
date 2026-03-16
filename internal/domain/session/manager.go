@@ -26,7 +26,7 @@ func NewManager(state StateStore, persist PersistStore, sessionTTLSeconds int) *
 	}
 }
 
-func (m *Manager) Create(ctx context.Context, bppID, bppURI string) (*Session, error) {
+func (m *Manager) Create(ctx context.Context, bppID, bppURI, coreVersion string) (*Session, error) {
 	if existing, _ := m.state.GetSessionByBPP(ctx, bppID); existing != nil {
 		_ = m.state.DeleteSession(ctx, existing.ID)
 	}
@@ -34,12 +34,13 @@ func (m *Manager) Create(ctx context.Context, bppID, bppURI string) (*Session, e
 
 	now := time.Now().UTC()
 	s := &Session{
-		ID:        uuid.NewString(),
-		BPPID:     bppID,
-		BPPURI:    bppURI,
-		Status:    SessionActive,
-		CreatedAt: now,
-		ExpiresAt: now.Add(m.sessionTTL),
+		ID:          uuid.NewString(),
+		BPPID:       bppID,
+		BPPURI:      bppURI,
+		Status:      SessionActive,
+		CreatedAt:   now,
+		ExpiresAt:   now.Add(m.sessionTTL),
+		CoreVersion: coreVersion,
 	}
 
 	if err := m.state.CreateSession(ctx, s); err != nil {

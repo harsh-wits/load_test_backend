@@ -22,6 +22,7 @@ type BCoordinator struct {
 	linkTxn     TxnLinker
 	throttle    Throttle
 	sessionID   string
+	coreVersion string
 }
 
 func NewBCoordinator(
@@ -48,6 +49,10 @@ func (c *BCoordinator) SetTxnLinker(fn TxnLinker) {
 func (c *BCoordinator) SetThrottle(t Throttle, sessionID string) {
 	c.throttle = t
 	c.sessionID = sessionID
+}
+
+func (c *BCoordinator) SetCoreVersion(v string) {
+	c.coreVersion = v
 }
 
 func (c *BCoordinator) SelectBatchFromExample(batchSize int) ([]SelectPayload, error) {
@@ -85,7 +90,9 @@ func (c *BCoordinator) preparePayload(action string, raw []byte) (toSend []byte,
 	if c.cfg.BAPID != "" {
 		ctxMap["bap_id"] = c.cfg.BAPID
 	}
-	if c.cfg.CoreVersion != "" {
+	if c.coreVersion != "" {
+		ctxMap["core_version"] = c.coreVersion
+	} else if c.cfg.CoreVersion != "" {
 		ctxMap["core_version"] = c.cfg.CoreVersion
 	}
 	updated, err := json.Marshal(env)
