@@ -1,0 +1,230 @@
+{
+    "context": {
+        "domain": "ONDC:RET11",
+        "country": "IND",
+        "city": "std:080",
+        "action": "search",
+        "core_version": "1.2.5",
+        "bap_id": "mighty-remarkably-zebra.ngrok-free.app",
+        "bap_uri": "https://mighty-remarkably-zebra.ngrok-free.app",
+        "transaction_id": "b7b40b3c-2e02-4b6a-9d2e-7a2f5c6464567",
+        "message_id": "a41a33b1-4c43-4e43-9b39-5b0a4e3edfgh6",
+        "timestamp": "2026-04-12T10:00:05.000Z",
+        "ttl": "PT30S"
+    },
+    "message": {
+        "intent": {
+            "fulfillment": {
+                "type": "Delivery"
+            },
+            "payment": {
+                "@ondc/org/buyer_app_finder_fee_type": "percent",
+                "@ondc/org/buyer_app_finder_fee_amount": "3"
+            },
+            "tags": [
+                {
+                    "code": "bap_terms",
+                    "list": [
+                        {
+                            "code": "static_terms",
+                            "value": "https://github.com/ONDC-Official/NP-Static-Terms/buyerNP_BNP/1.0/tc.pdf"
+                        },
+                        {
+                            "code": "static_terms_new",
+                            "value": "https://github.com/ONDC-Official/NP-Static-Terms/buyerNP_BNP/1.0/tc.pdf"
+                        },
+                        {
+                            "code": "effective_date",
+                            "value": "2026-03-22T11:05:04.729Z"
+                        }
+                    ]
+                },
+                {
+                    "code": "bap_features",
+                    "list": [
+                        {
+                            "code": "001",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "002",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "003",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "004",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "005",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "006",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "007",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "008",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "0091",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "0092",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "0093",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "0094",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "0095",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "0096",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "0097",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "0098",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "0099",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "00A",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "00B",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "00C",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "00D",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "00E",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "00F",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "010",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "011",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "012",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "013",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "014",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "015",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "016",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "017",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "018",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "019",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "01A",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "01B",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "01C",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "01D",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "01E",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "01F",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "020",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "021",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "022",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "023",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "024",
+                            "value": "yes"
+                        },
+                        {
+                            "code": "025",
+                            "value": "yes"
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+}
