@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -17,6 +18,7 @@ type MongoStore struct {
 	sessions *mongodriver.Collection
 	runs     *mongodriver.Collection
 	catalogs *mongodriver.Collection
+	payloads *mongodriver.Collection
 }
 
 func NewMongoStore(client *mongo.Client) *MongoStore {
@@ -24,6 +26,7 @@ func NewMongoStore(client *mongo.Client) *MongoStore {
 		sessions: client.Collection("sessions"),
 		runs:     client.Collection("runs"),
 		catalogs: client.Collection("catalogs"),
+		payloads: client.Collection("run_payloads"),
 	}
 }
 
@@ -111,6 +114,35 @@ func (s *MongoStore) GetSessionByID(ctx context.Context, id string) (*domainSess
 		return nil, fmt.Errorf("session not found")
 	}
 	return &sess, nil
+}
+
+func (s *MongoStore) SaveRunPayload(ctx context.Context, p *domainSession.RunPayload) error {
+	if p == nil {
+		return nil
+	}
+	if p.ID == "" {
+		p.ID = uuid.NewString()
+	}
+	if p.Timestamp.IsZero() {
+		p.Timestamp = time.Now().UTC()
+	}
+	_, err := s.payloads.InsertOne(ctx, p)
+	return err
+}
+
+func (s *MongoStore) GetRunPayloads(ctx context.Context, runID string) ([]*domainSession.RunPayload, error) {
+	opts := options.Find().SetSort(bson.M{"timestamp": 1})
+	cursor, err := s.payloads.Find(ctx, bson.M{"run_id": runID}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var payloads []*domainSession.RunPayload
+	if err := cursor.All(ctx, &payloads); err != nil {
+		return nil, err
+	}
+	return payloads, nil
 }
 
 func (s *MongoStore) ExpireSessionsByBPP(ctx context.Context, bppID string) error {

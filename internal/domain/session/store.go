@@ -40,4 +40,6 @@ type PersistStore interface {
 	ExpireSessionsByBPP(ctx context.Context, bppID string) error
 	HardDeleteSession(ctx context.Context, id string) error
 	HardDeleteSessionsByBPP(ctx context.Context, bppID string) (int64, error)
+	SaveRunPayload(ctx context.Context, p *RunPayload) error
+	GetRunPayloads(ctx context.Context, runID string) ([]*RunPayload, error)
 }

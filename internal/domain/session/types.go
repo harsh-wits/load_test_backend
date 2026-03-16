@@ -73,3 +73,15 @@ type RunMetrics struct {
 	Confirm   ActionMetrics `json:"confirm" bson:"confirm"`
 	OnConfirm ActionMetrics `json:"on_confirm" bson:"on_confirm"`
 }
+
+type RunPayload struct {
+	ID        string    `json:"id" bson:"_id"`
+	RunID     string    `json:"run_id" bson:"run_id"`
+	SessionID string    `json:"session_id" bson:"session_id"`
+	Stage     string    `json:"stage" bson:"stage"`
+	Direction string    `json:"direction" bson:"direction"`
+	TxnID     string    `json:"txn_id" bson:"txn_id"`
+	Status    int       `json:"status" bson:"status"`
+	Timestamp time.Time `json:"timestamp" bson:"timestamp"`
+	Body      []byte    `json:"body" bson:"body"`
+}

@@ -11,5 +11,6 @@ type Store interface {
 	Count(runID, pipeline, action string) (int, error)
 	FlushToFilesystem(runID, rootDir string) error
 	Cleanup(runID string)
+	Export(runID string, fn func(pipeline, action, txnID string, payload []byte) error) error
 }
 

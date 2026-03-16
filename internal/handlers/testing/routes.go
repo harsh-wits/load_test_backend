@@ -165,8 +165,15 @@ func (c *Controller) generateSearchPayload(ctx *fiber.Ctx) error {
 		return apierror.NewCustomError(500, "PIPELINE_5003", err.Error())
 	}
 
+	// Patch context so the preview mirrors what will actually be sent:
+	// fresh transaction_id, message_id, timestamp, and ttl.
+	patched, err := c.patchSearchContext(raw, uuid.NewString())
+	if err != nil {
+		return apierror.ErrInvalidRequestBody
+	}
+
 	var payload any
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	if err := json.Unmarshal(patched, &payload); err != nil {
 		return apierror.NewCustomError(500, "PIPELINE_5003", "search template is not valid JSON")
 	}
 
@@ -573,17 +580,63 @@ func (c *Controller) updateMetrics(ctx context.Context, runID, action string, re
 }
 
 func (c *Controller) flushRun(runID string) {
-	if c.store == nil || !c.cfg.RunsFSEnable {
+	if c.store == nil {
 		return
 	}
-	if err := c.store.FlushToFilesystem(runID, c.cfg.RunsFSRoot); err != nil {
-		log.Printf("[run] flush failed run=%s error=%v", runID, err)
+
+	switch strings.ToUpper(c.cfg.RunPersistence) {
+	case "DB":
+		bgCtx := context.Background()
+
+		run, err := c.sessions.GetRun(bgCtx, runID)
+		if err != nil || run == nil {
+			log.Printf("[run] skip DB flush, run not found run=%s error=%v", runID, err)
+			c.store.Cleanup(runID)
+			return
+		}
+
+		persist := c.sessions.Persist()
+		if persist == nil {
+			log.Printf("[run] persist store not configured, skipping DB flush run=%s", runID)
+			c.store.Cleanup(runID)
+			return
+		}
+
+		err = c.store.Export(runID, func(pipeline, action, txnID string, payload []byte) error {
+			direction := "request"
+			if strings.HasPrefix(action, "on_") {
+				direction = "response"
+			}
+			return persist.SaveRunPayload(bgCtx, &session.RunPayload{
+				RunID:     run.ID,
+				SessionID: run.SessionID,
+				Stage:     action,
+				Direction: direction,
+				TxnID:     txnID,
+				Status:    0,
+				Timestamp: time.Now().UTC(),
+				Body:      payload,
+			})
+		})
+		if err != nil {
+			log.Printf("[run] DB flush failed run=%s error=%v", runID, err)
+		}
+
+	default:
+		if !c.cfg.RunsFSEnable {
+			c.store.Cleanup(runID)
+			return
+		}
+		if err := c.store.FlushToFilesystem(runID, c.cfg.RunsFSRoot); err != nil {
+			log.Printf("[run] flush failed run=%s error=%v", runID, err)
+		}
 	}
+
 	c.store.Cleanup(runID)
 }
 
 func (c *Controller) loadSearchPayload() ([]byte, error) {
-	return domainPipeline.LoadSearchPayload()
+	return domainPipeline.LoadSearchPayload(c.cfg)
 }
 
 func (c *Controller) patchSearchContext(payload []byte, txnID string) ([]byte, error) {
@@ -599,6 +652,9 @@ func (c *Controller) patchSearchContext(payload []byte, txnID string) ([]byte, e
 	ctxMap["transaction_id"] = txnID
 	ctxMap["message_id"] = uuid.NewString()
 	ctxMap["timestamp"] = time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	if c.cfg != nil && c.cfg.DiscoveryWaitTTLSeconds > 0 {
+		ctxMap["ttl"] = fmt.Sprintf("PT%dS", c.cfg.DiscoveryWaitTTLSeconds)
+	}
 	return json.Marshal(full)
 }
 

@@ -131,3 +131,32 @@ func (s *RedisStore) Cleanup(runID string) {
 	ctx := context.Background()
 	_ = s.client.DelPattern(ctx, fmt.Sprintf("run:%s:*", runID))
 }
+
+func (s *RedisStore) Export(runID string, fn func(pipeline, action, txnID string, payload []byte) error) error {
+	if fn == nil {
+		return nil
+	}
+	ctx := context.Background()
+
+	pattern := fmt.Sprintf("run:%s:*:*", runID)
+	keys, err := s.client.Keys(ctx, pattern)
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		var run, pipeline, action string
+		if _, err := fmt.Sscanf(key, "run:%s:%s:%s", &run, &pipeline, &action); err != nil || run != runID {
+			continue
+		}
+		all, err := s.client.HGetAll(ctx, key)
+		if err != nil || len(all) == 0 {
+			continue
+		}
+		for txnID, payload := range all {
+			if err := fn(pipeline, action, txnID, payload); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}

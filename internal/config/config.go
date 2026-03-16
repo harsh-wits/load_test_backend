@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -32,8 +33,9 @@ type Config struct {
 
 	SwaggerEnable bool
 
-	RunsFSRoot   string
-	RunsFSEnable bool
+	RunsFSRoot     string
+	RunsFSEnable   bool   // derived from RunPersistence == "FS" for backward compatibility
+	RunPersistence string // "FS", "DB", or "" (none)
 
 	BAPURI string
 
@@ -56,6 +58,17 @@ type Config struct {
 func Load() (*Config, error) {
 	_ = godotenv.Load()
 
+	// Derive run persistence mode from env.
+	// Preferred: RUN_PERSISTENCE=FS|DB
+	// Backward-compat: RUNS_FS_ENABLE=true implies FS when RUN_PERSISTENCE is unset.
+	rawRunPersistence := strings.ToUpper(getEnv("RUN_PERSISTENCE", ""))
+	legacyFSEnable := getEnvBool("RUNS_FS_ENABLE", false)
+	if rawRunPersistence == "" {
+		if legacyFSEnable {
+			rawRunPersistence = "FS"
+		}
+	}
+
 	cfg := &Config{
 		HTTPPort:          getEnv("HTTP_PORT", "8080"),
 		RedisURL:          getEnv("REDIS_URL", "redis:6379"),
@@ -71,9 +84,11 @@ func Load() (*Config, error) {
 		Domain:            getEnv("DOMAIN", "nic2004:52110"),
 		CityCode:          getEnv("CITY_CODE", "std:080"),
 		VerificationEnable: getEnvBool("VERIFICATION_ENABLE", false),
-		SwaggerEnable:      getEnvBool("SWAGGER_ENABLE", true),
-		RunsFSRoot:              getEnv("RUNS_FS_ROOT", "./runs"),
-		RunsFSEnable:            getEnvBool("RUNS_FS_ENABLE", false),
+		SwaggerEnable: getEnvBool("SWAGGER_ENABLE", true),
+		RunsFSRoot:    getEnv("RUNS_FS_ROOT", "./runs"),
+		// Keep RunsFSEnable for existing callers, but derive it from RunPersistence.
+		RunPersistence: rawRunPersistence,
+		RunsFSEnable:   rawRunPersistence == "FS",
 		BAPURI:                  getEnv("BAP_URI", ""),
 		PipelineStageGapSeconds: getEnvInt("PIPELINE_STAGE_GAP_SECONDS", 5),
 		CoreVersion:             getEnv("CORE_VERSION", "1.2.0"),

@@ -152,3 +152,30 @@ func (s *MemoryStore) Cleanup(runID string) {
 		}
 	}
 }
+
+func (s *MemoryStore) Export(runID string, fn func(pipeline, action, txnID string, payload []byte) error) error {
+	if fn == nil {
+		return nil
+	}
+	prefix := runID + ":"
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for key, bucket := range s.data {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		parts := strings.SplitN(key, ":", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		pipeline, action := parts[1], parts[2]
+		for txnID, payload := range bucket {
+			if err := fn(pipeline, action, txnID, payload); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
