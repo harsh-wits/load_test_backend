@@ -99,6 +99,9 @@ func buildBatchFromCallbacks(
 }
 
 func enrichInit(full map[string]any, store runlog.Store, runID, txnID string) {
+	ctx, _ := full["context"].(map[string]any)
+	domain, _ := ctx["domain"].(string)
+
 	msg, _ := full["message"].(map[string]any)
 	if msg == nil {
 		msg = map[string]any{}
@@ -167,9 +170,10 @@ func enrichInit(full map[string]any, store runlog.Store, runID, txnID string) {
 		order["items"] = items
 	}
 
-	if _, ok := order["billing"].(map[string]any); !ok {
+	billing, hasBilling := order["billing"].(map[string]any)
+	if !hasBilling || billing == nil {
 		now := time.Now().UTC().Format(ondcTimestampLayout)
-		order["billing"] = map[string]any{
+		billing = map[string]any{
 			"name": "Test Buyer", "phone": "9999999999", "email": "test@example.com",
 			"address": map[string]any{
 				"name": "Test Buyer", "building": "Test Building", "locality": "MG Road",
@@ -177,6 +181,12 @@ func enrichInit(full map[string]any, store runlog.Store, runID, txnID string) {
 			},
 			"created_at": now, "updated_at": now,
 		}
+		order["billing"] = billing
+	}
+
+	var billingAddr map[string]any
+	if ba, _ := billing["address"].(map[string]any); ba != nil {
+		billingAddr = ba
 	}
 
 	var selectGPS, selectAreaCode string
@@ -237,6 +247,59 @@ func enrichInit(full map[string]any, store runlog.Store, runID, txnID string) {
 					addr["area_code"] = "560001"
 				}
 			}
+
+			if billingAddr != nil {
+				if v, _ := billingAddr["name"].(string); v != "" {
+					if _, ok := addr["name"].(string); !ok {
+						addr["name"] = v
+					}
+				}
+				if v, _ := billingAddr["building"].(string); v != "" {
+					if _, ok := addr["building"].(string); !ok {
+						addr["building"] = v
+					}
+				}
+				if v, _ := billingAddr["locality"].(string); v != "" {
+					if _, ok := addr["locality"].(string); !ok {
+						addr["locality"] = v
+					}
+				}
+				if v, _ := billingAddr["city"].(string); v != "" {
+					if _, ok := addr["city"].(string); !ok {
+						addr["city"] = v
+					}
+				}
+				if v, _ := billingAddr["state"].(string); v != "" {
+					if _, ok := addr["state"].(string); !ok {
+						addr["state"] = v
+					}
+				}
+				if v, _ := billingAddr["country"].(string); v != "" {
+					if _, ok := addr["country"].(string); !ok {
+						addr["country"] = v
+					}
+				}
+			}
+
+			// Fallback defaults if still missing
+			if _, ok := addr["name"].(string); !ok {
+				addr["name"] = "Test Buyer"
+			}
+			if _, ok := addr["building"].(string); !ok {
+				addr["building"] = "Test Building"
+			}
+			if _, ok := addr["locality"].(string); !ok {
+				addr["locality"] = "MG Road"
+			}
+			if _, ok := addr["city"].(string); !ok {
+				addr["city"] = "Bengaluru"
+			}
+			if _, ok := addr["state"].(string); !ok {
+				addr["state"] = "KA"
+			}
+			if _, ok := addr["country"].(string); !ok {
+				addr["country"] = "IND"
+			}
 			loc["address"] = addr
 			end["location"] = loc
 
@@ -249,6 +312,13 @@ func enrichInit(full map[string]any, store runlog.Store, runID, txnID string) {
 			}
 			end["contact"] = contact
 			fm["end"] = end
+
+			// RET13-specific: remove @ondc/org/category on init fulfillments
+			// to satisfy schemas that disallow this additional property.
+			if domain == "ONDC:RET13" {
+				delete(fm, "@ondc/org/category")
+			}
+
 			fulf[i] = fm
 		}
 		order["fulfillments"] = fulf
@@ -314,6 +384,12 @@ func enrichConfirm(full map[string]any, ctxMap map[string]any) {
 			}
 			end["person"] = person
 			fm["end"] = end
+
+			// Ensure a valid @ondc/org/TAT on confirm fulfillments.
+			if _, ok := fm["@ondc/org/TAT"].(string); !ok {
+				fm["@ondc/org/TAT"] = "P2D"
+			}
+
 			fulf[i] = fm
 		}
 		order["fulfillments"] = fulf

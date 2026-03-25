@@ -397,6 +397,12 @@ components:
           type: string
         bpp_uri:
           type: string
+        core_version:
+          type: string
+          description: Optional. If omitted or empty, defaults from server configuration. Must be one of 1.2.0, 1.2.5 when provided.
+        domain:
+          type: string
+          description: Optional. If omitted or empty, defaults from server configuration. Must be one of ONDC:RET10-ONDC:RET16 or ONDC:RET18 when provided.
 
     Session:
       type: object
@@ -406,6 +412,10 @@ components:
         bpp_id:
           type: string
         bpp_uri:
+          type: string
+        core_version:
+          type: string
+        domain:
           type: string
         status:
           type: string
@@ -513,6 +523,18 @@ components:
           type: integer
         timeout:
           type: integer
+        avg_ms:
+          type: number
+          format: float
+        p90_ms:
+          type: number
+          format: float
+        p95_ms:
+          type: number
+          format: float
+        p99_ms:
+          type: number
+          format: float
 
     PaginatedSessions:
       type: object

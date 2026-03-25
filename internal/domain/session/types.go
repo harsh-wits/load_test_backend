@@ -34,6 +34,7 @@ type Session struct {
 	CreatedAt   time.Time     `json:"created_at" bson:"created_at"`
 	ExpiresAt   time.Time     `json:"expires_at" bson:"expires_at"`
 	CoreVersion string        `json:"core_version,omitempty" bson:"core_version,omitempty"`
+	Domain      string        `json:"domain,omitempty" bson:"domain,omitempty"`
 }
 
 type CatalogState struct {
@@ -64,6 +65,10 @@ type ActionMetrics struct {
 	Success int64 `json:"success" bson:"success"`
 	Failure int64 `json:"failure" bson:"failure"`
 	Timeout int64 `json:"timeout" bson:"timeout"`
+	AvgMS   float64 `json:"avg_ms" bson:"avg_ms"`
+	P90MS   float64 `json:"p90_ms" bson:"p90_ms"`
+	P95MS   float64 `json:"p95_ms" bson:"p95_ms"`
+	P99MS   float64 `json:"p99_ms" bson:"p99_ms"`
 }
 
 type RunMetrics struct {

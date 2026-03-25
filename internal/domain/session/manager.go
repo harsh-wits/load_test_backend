@@ -2,10 +2,12 @@ package session
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
 
+	"seller_app_load_tester/internal/domain/latency"
 	"seller_app_load_tester/internal/shared/apierror"
 )
 
@@ -26,7 +28,7 @@ func NewManager(state StateStore, persist PersistStore, sessionTTLSeconds int) *
 	}
 }
 
-func (m *Manager) Create(ctx context.Context, bppID, bppURI, coreVersion string) (*Session, error) {
+func (m *Manager) Create(ctx context.Context, bppID, bppURI, coreVersion, domain string) (*Session, error) {
 	if existing, _ := m.state.GetSessionByBPP(ctx, bppID); existing != nil {
 		_ = m.state.DeleteSession(ctx, existing.ID)
 	}
@@ -41,6 +43,7 @@ func (m *Manager) Create(ctx context.Context, bppID, bppURI, coreVersion string)
 		CreatedAt:   now,
 		ExpiresAt:   now.Add(m.sessionTTL),
 		CoreVersion: coreVersion,
+		Domain:      domain,
 	}
 
 	if err := m.state.CreateSession(ctx, s); err != nil {
@@ -158,9 +161,62 @@ func (m *Manager) FinishRun(ctx context.Context, sessionID, runID, status string
 		if metrics != nil {
 			run.Metrics = *metrics
 		}
+		m.mergeRunLatencySummaries(ctx, run)
 		_ = m.persist.SaveRun(ctx, run)
 	}
 	return nil
+}
+
+func (m *Manager) mergeRunLatencySummaries(ctx context.Context, run *Run) {
+	if m.persist == nil || run == nil {
+		return
+	}
+	if run.Status != "completed" && run.Status != "failed" {
+		return
+	}
+
+	sums, err := m.persist.GetRunLatencySummaries(ctx, run.ID)
+	if err != nil {
+		log.Printf("[run] get latency summaries FAILED run=%s error=%v", run.ID, err)
+		return
+	}
+
+	if s := sums[latency.StageOnSelect]; s != nil {
+		run.Metrics.OnSelect = ActionMetrics{
+			Sent:    s.Total,
+			Success: s.SuccessCount,
+			Failure: s.FailureCount,
+			Timeout: s.TimeoutCount,
+			AvgMS:   s.AvgMS,
+			P90MS:   s.P90MS,
+			P95MS:   s.P95MS,
+			P99MS:   s.P99MS,
+		}
+	}
+	if s := sums[latency.StageOnInit]; s != nil {
+		run.Metrics.OnInit = ActionMetrics{
+			Sent:    s.Total,
+			Success: s.SuccessCount,
+			Failure: s.FailureCount,
+			Timeout: s.TimeoutCount,
+			AvgMS:   s.AvgMS,
+			P90MS:   s.P90MS,
+			P95MS:   s.P95MS,
+			P99MS:   s.P99MS,
+		}
+	}
+	if s := sums[latency.StageOnConfirm]; s != nil {
+		run.Metrics.OnConfirm = ActionMetrics{
+			Sent:    s.Total,
+			Success: s.SuccessCount,
+			Failure: s.FailureCount,
+			Timeout: s.TimeoutCount,
+			AvgMS:   s.AvgMS,
+			P90MS:   s.P90MS,
+			P95MS:   s.P95MS,
+			P99MS:   s.P99MS,
+		}
+	}
 }
 
 func (m *Manager) GetRun(ctx context.Context, runID string) (*Run, error) {
@@ -172,6 +228,7 @@ func (m *Manager) GetRun(ctx context.Context, runID string) (*Run, error) {
 	if metrics != nil {
 		r.Metrics = *metrics
 	}
+	m.mergeRunLatencySummaries(ctx, r)
 	return r, nil
 }
 

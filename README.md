@@ -92,6 +92,10 @@ This starts Redis and Mongo alongside the app for a fully self-contained local e
 6. **Wait for `on_confirm`**: callbacks recorded.
 7. **Metrics**: run metrics are available in real time via `GET /sessions/:id/runs/:run_id`.
 
+### Latency metrics
+
+See [`docs/latency_metrics.md`](docs/latency_metrics.md) for how latency is computed, where it is exposed in the API, and how to query raw/summarized latency data in MongoDB.
+
 ### Configuration
 
 | Key | Description |

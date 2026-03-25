@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"seller_app_load_tester/internal/config"
+	"seller_app_load_tester/internal/domain/latency"
 	domainPipeline "seller_app_load_tester/internal/domain/pipeline"
 	"seller_app_load_tester/internal/domain/session"
 	"seller_app_load_tester/internal/ports/seller"
@@ -101,6 +102,7 @@ type createSessionRequest struct {
 	BPPID       string  `json:"bpp_id"`
 	BPPURI      string  `json:"bpp_uri"`
 	CoreVersion *string `json:"core_version"`
+	Domain      *string `json:"domain"`
 }
 
 func (c *Controller) createSession(ctx *fiber.Ctx) error {
@@ -113,20 +115,34 @@ func (c *Controller) createSession(ctx *fiber.Ctx) error {
 	}
 
 	coreVersion := ""
+	domain := ""
 	if req.CoreVersion != nil {
-		coreVersion = session.NormalizeCoreVersion(*req.CoreVersion)
+		coreVersion = strings.TrimSpace(*req.CoreVersion)
 		if coreVersion != "" && !session.IsValidCoreVersion(coreVersion) {
 			return apierror.NewCustomError(400, "INVALID_CORE_VERSION", "core_version must be either 1.2.0 or 1.2.5")
 		}
 	}
 	if coreVersion == "" {
-		coreVersion = session.NormalizeCoreVersion(c.cfg.CoreVersion)
+		coreVersion = strings.TrimSpace(c.cfg.CoreVersion)
 		if !session.IsValidCoreVersion(coreVersion) {
 			return apierror.NewCustomError(500, "INVALID_CORE_VERSION_CONFIG", "CORE_VERSION in configuration is not supported")
 		}
 	}
 
-	sess, err := c.sessions.Create(ctx.Context(), req.BPPID, req.BPPURI, coreVersion)
+	if req.Domain != nil {
+		domain = strings.TrimSpace(*req.Domain)
+		if domain != "" && !session.IsValidDomain(domain) {
+			return apierror.NewCustomError(400, "INVALID_DOMAIN", "domain must be one of ONDC:RET10-ONDC:RET16 or ONDC:RET18")
+		}
+	}
+	if domain == "" {
+		domain = strings.TrimSpace(c.cfg.Domain)
+		if !session.IsValidDomain(domain) {
+			return apierror.NewCustomError(500, "INVALID_DOMAIN_CONFIG", "DOMAIN in configuration is not supported")
+		}
+	}
+
+	sess, err := c.sessions.Create(ctx.Context(), req.BPPID, req.BPPURI, coreVersion, domain)
 	if err != nil {
 		return err
 	}
@@ -175,7 +191,7 @@ func (c *Controller) generateSearchPayload(ctx *fiber.Ctx) error {
 		return err
 	}
 
-	raw, err := c.loadSearchPayload()
+	raw, err := c.loadSearchPayload(sess)
 	if err != nil {
 		return apierror.NewCustomError(500, "PIPELINE_5003", err.Error())
 	}
@@ -219,7 +235,7 @@ func (c *Controller) startDiscovery(ctx *fiber.Ctx) error {
 	if err := ctx.BodyParser(&req); err == nil && len(req.Payload) > 0 {
 		searchPayload = req.Payload
 	} else {
-		searchPayload, err = c.loadSearchPayload()
+		searchPayload, err = c.loadSearchPayload(sess)
 		if err != nil {
 			return apierror.NewCustomError(500, "PIPELINE_5003", err.Error())
 		}
@@ -389,6 +405,7 @@ func (c *Controller) startPreorder(ctx *fiber.Ctx) error {
 			if bgCtx.Err() != nil {
 				status = "failed"
 			}
+			_ = c.finalizeRunLatencies(bgCtx, sess.ID, run.ID)
 			_ = c.sessions.FinishRun(bgCtx, sess.ID, run.ID, status)
 			c.notifier.Reset(run.ID)
 			c.flushRun(run.ID)
@@ -578,6 +595,137 @@ func (c *Controller) runPreorder(
 	}
 }
 
+func (c *Controller) finalizeRunLatencies(ctx context.Context, sessionID, runID string) error {
+	if c.store == nil || c.sessions == nil {
+		return nil
+	}
+	persist := c.sessions.Persist()
+	if persist == nil {
+		return nil
+	}
+
+	const callbackTimeout = 30 * time.Second
+	cutoffAt := time.Now().UTC()
+	timeoutThresholdMS := callbackTimeout.Milliseconds()
+
+	type stagePair struct {
+		reqAction string
+		cbStage   latency.Stage
+	}
+
+	pairs := []stagePair{
+		{reqAction: "select", cbStage: latency.StageOnSelect},
+		{reqAction: "init", cbStage: latency.StageOnInit},
+		{reqAction: "confirm", cbStage: latency.StageOnConfirm},
+	}
+
+	for _, p := range pairs {
+		txnIDs, err := c.store.ListTxnIDs(runID, "pipeline_b", p.reqAction)
+		if err != nil {
+			log.Printf("[latency] list sent txn_ids FAILED run=%s action=%s error=%v", runID, p.reqAction, err)
+			continue
+		}
+
+		existing, err := persist.GetRunLatencyEvents(ctx, runID, p.cbStage, txnIDs)
+		if err != nil {
+			log.Printf("[latency] fetch existing events FAILED run=%s stage=%s error=%v", runID, p.cbStage, err)
+			continue
+		}
+
+		total := int64(len(txnIDs))
+		var successCount, failureCount, timeoutCount int64
+		successLatenciesMs := make([]int64, 0, len(txnIDs))
+
+		for _, txnID := range txnIDs {
+			if ev, ok := existing[txnID]; ok && ev != nil {
+				switch ev.Outcome {
+				case latency.OutcomeSuccess:
+					successCount++
+					if ev.LatencyMS != nil {
+						successLatenciesMs = append(successLatenciesMs, *ev.LatencyMS)
+					}
+				case latency.OutcomeFailure:
+					failureCount++
+				case latency.OutcomeTimeout:
+					timeoutCount++
+				default:
+					failureCount++
+				}
+				continue
+			}
+
+			sentAt, tsErr := c.store.GetTimestamp(runID, "pipeline_b", p.reqAction, txnID)
+			if tsErr != nil {
+				// Without sent_at we cannot classify precisely; treat it as failure for counters.
+				failureCount++
+				ev := &latency.RunLatencyEvent{
+					SessionID:   sessionID,
+					RunID:       runID,
+					Stage:       p.cbStage,
+					TxnID:       txnID,
+					SentAt:      cutoffAt,
+					ReceivedAt: nil,
+					LatencyMS:   nil,
+					Outcome:     latency.OutcomeFailure,
+					RecordedAt:  cutoffAt,
+				}
+				if err := persist.UpsertRunLatencyEvent(ctx, ev); err != nil {
+					log.Printf("[latency] upsert missing event (missing sent_at) FAILED run=%s stage=%s txn=%s error=%v", runID, p.cbStage, txnID, err)
+				}
+				continue
+			}
+
+			outcome := latency.OutcomeFailure
+			if cutoffAt.Sub(sentAt) >= callbackTimeout {
+				outcome = latency.OutcomeTimeout
+				timeoutCount++
+			} else {
+				failureCount++
+			}
+
+			ev := &latency.RunLatencyEvent{
+				SessionID:   sessionID,
+				RunID:       runID,
+				Stage:       p.cbStage,
+				TxnID:       txnID,
+				SentAt:      sentAt,
+				ReceivedAt: nil,
+				LatencyMS:   nil,
+				Outcome:     outcome,
+				RecordedAt:  cutoffAt,
+			}
+			if err := persist.UpsertRunLatencyEvent(ctx, ev); err != nil {
+				log.Printf("[latency] upsert missing event FAILED run=%s stage=%s txn=%s error=%v", runID, p.cbStage, txnID, err)
+			}
+		}
+
+		avgMs, p90Ms, p95Ms, p99Ms := latency.ComputeSummaryFromSuccessLatenciesMs(successLatenciesMs)
+
+		sum := &latency.RunLatencySummary{
+			SessionID:           sessionID,
+			RunID:               runID,
+			Stage:               p.cbStage,
+			TimeoutThresholdMS: timeoutThresholdMS,
+			CutoffAt:            cutoffAt,
+			Total:               total,
+			SuccessCount:        successCount,
+			FailureCount:        failureCount,
+			TimeoutCount:        timeoutCount,
+			AvgMS:               avgMs,
+			P90MS:               float64(p90Ms),
+			P95MS:               float64(p95Ms),
+			P99MS:               float64(p99Ms),
+			ComputedAt:         cutoffAt,
+		}
+
+		if err := persist.UpsertRunLatencySummary(ctx, sum); err != nil {
+			log.Printf("[latency] upsert summary FAILED run=%s stage=%s error=%v", runID, p.cbStage, err)
+		}
+	}
+
+	return nil
+}
+
 // --- Helpers ---
 
 func (c *Controller) updateMetrics(ctx context.Context, runID, action string, results []domainPipeline.DispatchResult) {
@@ -651,8 +799,8 @@ func (c *Controller) flushRun(runID string) {
 	c.store.Cleanup(runID)
 }
 
-func (c *Controller) loadSearchPayload() ([]byte, error) {
-	return domainPipeline.LoadSearchPayload(c.cfg)
+func (c *Controller) loadSearchPayload(sess *session.Session) ([]byte, error) {
+	return domainPipeline.LoadSearchPayload(c.cfg, sess)
 }
 
 func (c *Controller) patchSearchContext(payload []byte, txnID string) ([]byte, error) {

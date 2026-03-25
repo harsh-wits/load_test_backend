@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"seller_app_load_tester/internal/shared/redis"
@@ -29,6 +30,10 @@ func (s *RedisStore) hashKey(runID, pipeline, action string) string {
 	return fmt.Sprintf("runlog:%s:%s:%s", runID, pipeline, action)
 }
 
+func (s *RedisStore) timestampHashKey(runID, pipeline, action string) string {
+	return fmt.Sprintf("runlog:%s:ts:%s:%s", runID, pipeline, action)
+}
+
 func (s *RedisStore) counterKey(runID, pipeline, action string) string {
 	return fmt.Sprintf("runlog:%s:count:%s:%s", runID, pipeline, action)
 }
@@ -50,6 +55,50 @@ func (s *RedisStore) Record(runID, pipeline, action, transactionID string, paylo
 	}
 	_ = s.client.Expire(ctx, ck, s.ttl)
 	return nil
+}
+
+func (s *RedisStore) RecordTimestamp(runID, pipeline, action, transactionID string, t time.Time) error {
+	if runID == "" || pipeline == "" || action == "" || transactionID == "" {
+		return nil
+	}
+	ctx := context.Background()
+	hk := s.timestampHashKey(runID, pipeline, action)
+	if err := s.client.HSet(ctx, hk, transactionID, []byte(strconv.FormatInt(t.UTC().UnixNano(), 10))); err != nil {
+		return fmt.Errorf("hset %s: %w", hk, err)
+	}
+	_ = s.client.Expire(ctx, hk, s.ttl)
+	return nil
+}
+
+func (s *RedisStore) GetTimestamp(runID, pipeline, action, transactionID string) (time.Time, error) {
+	ctx := context.Background()
+	hk := s.timestampHashKey(runID, pipeline, action)
+	raw, err := s.client.HGet(ctx, hk, transactionID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if raw == nil {
+		return time.Time{}, fmt.Errorf("timestamp not found for txn %s", transactionID)
+	}
+	var ns int64
+	if _, err := fmt.Sscanf(string(raw), "%d", &ns); err != nil {
+		return time.Time{}, fmt.Errorf("parse timestamp for txn %s: %w", transactionID, err)
+	}
+	return time.Unix(0, ns).UTC(), nil
+}
+
+func (s *RedisStore) ListTxnIDs(runID, pipeline, action string) ([]string, error) {
+	ctx := context.Background()
+	hk := s.timestampHashKey(runID, pipeline, action)
+	all, err := s.client.HGetAll(ctx, hk)
+	if err != nil {
+		return nil, err
+	}
+	txnIDs := make([]string, 0, len(all))
+	for txnID := range all {
+		txnIDs = append(txnIDs, txnID)
+	}
+	return txnIDs, nil
 }
 
 func (s *RedisStore) Get(runID, pipeline, action, transactionID string) ([]byte, error) {

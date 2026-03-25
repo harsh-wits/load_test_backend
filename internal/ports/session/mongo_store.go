@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,6 +11,7 @@ import (
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
+	"seller_app_load_tester/internal/domain/latency"
 	domainSession "seller_app_load_tester/internal/domain/session"
 	"seller_app_load_tester/internal/shared/mongo"
 )
@@ -19,14 +21,42 @@ type MongoStore struct {
 	runs     *mongodriver.Collection
 	catalogs *mongodriver.Collection
 	payloads *mongodriver.Collection
+	latencyEvents     *mongodriver.Collection
+	latencySummaries  *mongodriver.Collection
 }
 
 func NewMongoStore(client *mongo.Client) *MongoStore {
-	return &MongoStore{
+	s := &MongoStore{
 		sessions: client.Collection("sessions"),
 		runs:     client.Collection("runs"),
 		catalogs: client.Collection("catalogs"),
 		payloads: client.Collection("run_payloads"),
+		latencyEvents:    client.Collection("run_latency_events"),
+		latencySummaries: client.Collection("run_latency_summary"),
+	}
+
+	s.ensureLatencyIndexes()
+	return s
+}
+
+func (s *MongoStore) ensureLatencyIndexes() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := s.latencyEvents.Indexes().CreateOne(ctx, mongodriver.IndexModel{
+		Keys: bson.M{"run_id": 1, "stage": 1, "txn_id": 1},
+		Options: options.Index().SetUnique(true),
+	})
+	if err != nil {
+		log.Printf("[mongo] latencyEvents index create FAILED error=%v", err)
+	}
+
+	_, err = s.latencySummaries.Indexes().CreateOne(ctx, mongodriver.IndexModel{
+		Keys: bson.M{"run_id": 1, "stage": 1},
+		Options: options.Index().SetUnique(true),
+	})
+	if err != nil {
+		log.Printf("[mongo] latencySummaries index create FAILED error=%v", err)
 	}
 }
 
@@ -143,6 +173,118 @@ func (s *MongoStore) GetRunPayloads(ctx context.Context, runID string) ([]*domai
 		return nil, err
 	}
 	return payloads, nil
+}
+
+func (s *MongoStore) UpsertRunLatencyEvent(ctx context.Context, e *latency.RunLatencyEvent) error {
+	if e == nil {
+		return nil
+	}
+
+	filter := bson.M{
+		"run_id": e.RunID,
+		"stage":  e.Stage,
+		"txn_id": e.TxnID,
+	}
+
+	// `$setOnInsert` ensures "late callbacks" cannot overwrite already-classified outcomes.
+	doc := bson.M{
+		"session_id":    e.SessionID,
+		"run_id":        e.RunID,
+		"stage":         e.Stage,
+		"txn_id":        e.TxnID,
+		"sent_at":       e.SentAt,
+		"received_at":  e.ReceivedAt,
+		"latency_ms":   e.LatencyMS,
+		"outcome":      e.Outcome,
+		"recorded_at":  e.RecordedAt,
+		"timeout_cause": e.TimeoutCause,
+	}
+
+	opts := options.Update().SetUpsert(true)
+	update := bson.M{"$setOnInsert": doc}
+	_, err := s.latencyEvents.UpdateOne(ctx, filter, update, opts)
+	return err
+}
+
+func (s *MongoStore) UpsertRunLatencySummary(ctx context.Context, sum *latency.RunLatencySummary) error {
+	if sum == nil {
+		return nil
+	}
+
+	filter := bson.M{
+		"run_id": sum.RunID,
+		"stage":  sum.Stage,
+	}
+
+	doc := bson.M{
+		"session_id":           sum.SessionID,
+		"run_id":               sum.RunID,
+		"stage":                sum.Stage,
+		"timeout_threshold_ms": sum.TimeoutThresholdMS,
+		"cutoff_at":           sum.CutoffAt,
+		"total":                sum.Total,
+		"success_count":       sum.SuccessCount,
+		"failure_count":       sum.FailureCount,
+		"timeout_count":       sum.TimeoutCount,
+		"avg_ms":               sum.AvgMS,
+		"p90_ms":               sum.P90MS,
+		"p95_ms":               sum.P95MS,
+		"p99_ms":               sum.P99MS,
+		"computed_at":         sum.ComputedAt,
+	}
+
+	opts := options.Update().SetUpsert(true)
+	update := bson.M{"$set": doc}
+	_, err := s.latencySummaries.UpdateOne(ctx, filter, update, opts)
+	return err
+}
+
+func (s *MongoStore) GetRunLatencyEvents(ctx context.Context, runID string, stage latency.Stage, txnIDs []string) (map[string]*latency.RunLatencyEvent, error) {
+	out := map[string]*latency.RunLatencyEvent{}
+	if len(txnIDs) == 0 {
+		return out, nil
+	}
+
+	filter := bson.M{
+		"run_id": runID,
+		"stage":  stage,
+		"txn_id": bson.M{"$in": txnIDs},
+	}
+
+	cursor, err := s.latencyEvents.Find(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	for cursor.Next(ctx) {
+		var e latency.RunLatencyEvent
+		if err := cursor.Decode(&e); err != nil {
+			return nil, err
+		}
+		ev := e
+		out[ev.TxnID] = &ev
+	}
+	return out, nil
+}
+
+func (s *MongoStore) GetRunLatencySummaries(ctx context.Context, runID string) (map[latency.Stage]*latency.RunLatencySummary, error) {
+	out := map[latency.Stage]*latency.RunLatencySummary{}
+	cursor, err := s.latencySummaries.Find(ctx, bson.M{"run_id": runID})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	for cursor.Next(ctx) {
+		var sum latency.RunLatencySummary
+		if err := cursor.Decode(&sum); err != nil {
+			return nil, err
+		}
+		s := sum
+		out[s.Stage] = &s
+	}
+	return out, nil
 }
 
 func (s *MongoStore) ExpireSessionsByBPP(ctx context.Context, bppID string) error {

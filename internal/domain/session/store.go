@@ -1,6 +1,10 @@
 package session
 
-import "context"
+import (
+	"context"
+
+	"seller_app_load_tester/internal/domain/latency"
+)
 
 type StateStore interface {
 	CreateSession(ctx context.Context, s *Session) error
@@ -42,4 +46,9 @@ type PersistStore interface {
 	HardDeleteSessionsByBPP(ctx context.Context, bppID string) (int64, error)
 	SaveRunPayload(ctx context.Context, p *RunPayload) error
 	GetRunPayloads(ctx context.Context, runID string) ([]*RunPayload, error)
+
+	UpsertRunLatencyEvent(ctx context.Context, e *latency.RunLatencyEvent) error
+	UpsertRunLatencySummary(ctx context.Context, s *latency.RunLatencySummary) error
+	GetRunLatencyEvents(ctx context.Context, runID string, stage latency.Stage, txnIDs []string) (map[string]*latency.RunLatencyEvent, error)
+	GetRunLatencySummaries(ctx context.Context, runID string) (map[latency.Stage]*latency.RunLatencySummary, error)
 }

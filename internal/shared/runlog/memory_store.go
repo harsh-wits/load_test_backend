@@ -7,18 +7,21 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type MemoryStore struct {
 	mu       sync.RWMutex
 	data     map[string]map[string][]byte // "{runID}:{pipeline}:{action}" -> txnID -> payload
 	counters map[string]*atomic.Int64
+	timestamps map[string]map[string]time.Time // "{runID}:{pipeline}:{action}" -> txnID -> sent_at/received_at
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		data:     make(map[string]map[string][]byte),
 		counters: make(map[string]*atomic.Int64),
+		timestamps: make(map[string]map[string]time.Time),
 	}
 }
 
@@ -49,6 +52,52 @@ func (s *MemoryStore) Record(runID, pipeline, action, transactionID string, payl
 
 	ctr.Add(1)
 	return nil
+}
+
+func (s *MemoryStore) RecordTimestamp(runID, pipeline, action, transactionID string, t time.Time) error {
+	if runID == "" || pipeline == "" || action == "" || transactionID == "" {
+		return nil
+	}
+	key := s.bucketKey(runID, pipeline, action)
+	s.mu.Lock()
+	bucket, ok := s.timestamps[key]
+	if !ok {
+		bucket = make(map[string]time.Time)
+		s.timestamps[key] = bucket
+	}
+	bucket[transactionID] = t.UTC()
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *MemoryStore) GetTimestamp(runID, pipeline, action, transactionID string) (time.Time, error) {
+	key := s.bucketKey(runID, pipeline, action)
+	s.mu.RLock()
+	bucket := s.timestamps[key]
+	s.mu.RUnlock()
+	if bucket == nil {
+		return time.Time{}, fmt.Errorf("no timestamp data for %s/%s/%s", runID, pipeline, action)
+	}
+	ts, ok := bucket[transactionID]
+	if !ok {
+		return time.Time{}, fmt.Errorf("timestamp not found for txn %s", transactionID)
+	}
+	return ts, nil
+}
+
+func (s *MemoryStore) ListTxnIDs(runID, pipeline, action string) ([]string, error) {
+	key := s.bucketKey(runID, pipeline, action)
+	s.mu.RLock()
+	bucket := s.timestamps[key]
+	s.mu.RUnlock()
+	if bucket == nil {
+		return nil, nil
+	}
+	out := make([]string, 0, len(bucket))
+	for txnID := range bucket {
+		out = append(out, txnID)
+	}
+	return out, nil
 }
 
 func (s *MemoryStore) Get(runID, pipeline, action, transactionID string) ([]byte, error) {
@@ -149,6 +198,11 @@ func (s *MemoryStore) Cleanup(runID string) {
 	for k := range s.counters {
 		if strings.HasPrefix(k, prefix) {
 			delete(s.counters, k)
+		}
+	}
+	for k := range s.timestamps {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.timestamps, k)
 		}
 	}
 }

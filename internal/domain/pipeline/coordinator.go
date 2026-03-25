@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"time"
 
 	"seller_app_load_tester/internal/config"
 	"seller_app_load_tester/internal/ports/seller"
@@ -121,6 +122,7 @@ func (c *BCoordinator) RunSelectStage(ctx context.Context, runID, baseURL string
 			}
 			c.linkTxn(runID, txnID)
 			_ = c.store.Record(runID, "pipeline_b", "select", txnID, toSend)
+			_ = c.store.RecordTimestamp(runID, "pipeline_b", "select", txnID, time.Now().UTC())
 			if err := c.seller.Select(ctx, baseURL, toSend); err != nil {
 				return DispatchResult{Index: idx, TxnID: txnID, Err: err}
 			}
@@ -147,6 +149,7 @@ func (c *BCoordinator) RunInitStage(ctx context.Context, runID, baseURL string, 
 			}
 			if txnID != "" {
 				_ = c.store.Record(runID, "pipeline_b", "init", txnID, toSend)
+				_ = c.store.RecordTimestamp(runID, "pipeline_b", "init", txnID, time.Now().UTC())
 			}
 			if err := c.seller.Init(ctx, baseURL, toSend); err != nil {
 				return DispatchResult{Index: idx, TxnID: txnID, Err: err}
@@ -174,6 +177,7 @@ func (c *BCoordinator) RunConfirmStage(ctx context.Context, runID, baseURL strin
 			}
 			if txnID != "" {
 				_ = c.store.Record(runID, "pipeline_b", "confirm", txnID, toSend)
+				_ = c.store.RecordTimestamp(runID, "pipeline_b", "confirm", txnID, time.Now().UTC())
 			}
 			if err := c.seller.Confirm(ctx, baseURL, toSend); err != nil {
 				return DispatchResult{Index: idx, TxnID: txnID, Err: err}
