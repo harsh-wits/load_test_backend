@@ -15,14 +15,16 @@ import (
 const ondcTimestampLayout = "2006-01-02T15:04:05.000Z07:00"
 
 func (c *Controller) verifyInbound(action string, ctx *fiber.Ctx) error {
+	// saving time by returning early if verification is not enabled
+	if !c.verification.Enabled {
+		return nil
+	}
+	log.Printf("[callbacks] verification enabled=%t", c.verification.Enabled)
 	authHeader := ctx.Get("Authorization")
 	hasHeader := authHeader != ""
 	log.Printf("[callbacks] verifying %s auth_header_present=%t verification_enabled=%t",
 		action, hasHeader, c.verification.Enabled)
 
-	if !c.verification.Enabled {
-		return nil
-	}
 	if !hasHeader {
 		return nil
 	}
