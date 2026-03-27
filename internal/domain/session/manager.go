@@ -44,6 +44,7 @@ func (m *Manager) Create(ctx context.Context, bppID, bppURI, coreVersion, domain
 		ExpiresAt:   now.Add(m.sessionTTL),
 		CoreVersion: coreVersion,
 		Domain:      domain,
+		VerificationEnabled: false, // default: disabled; can be enabled per-session via API
 	}
 
 	if err := m.state.CreateSession(ctx, s); err != nil {
@@ -55,6 +56,22 @@ func (m *Manager) Create(ctx context.Context, bppID, bppURI, coreVersion, domain
 	if err := m.state.SetPreorderState(ctx, s.ID, &PreorderState{Status: PreorderIdle}); err != nil {
 		return nil, err
 	}
+	_ = m.persist.SaveSession(ctx, s)
+	return s, nil
+}
+
+func (m *Manager) SetVerificationEnabled(ctx context.Context, sessionID string, enabled bool) (*Session, error) {
+	s, err := m.GetAny(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	s.VerificationEnabled = enabled
+
+	// Overwrite Redis state (CreateSession uses SET and is safe for updates).
+	if err := m.state.CreateSession(ctx, s); err != nil {
+		return nil, err
+	}
+	// Best-effort persistence to Mongo.
 	_ = m.persist.SaveSession(ctx, s)
 	return s, nil
 }
@@ -162,6 +179,7 @@ func (m *Manager) FinishRun(ctx context.Context, sessionID, runID, status string
 			run.Metrics = *metrics
 		}
 		m.mergeRunLatencySummaries(ctx, run)
+		run.JourneyMetrics = buildRunJourneyMetrics(run.Metrics)
 		_ = m.persist.SaveRun(ctx, run)
 	}
 	return nil
@@ -222,14 +240,47 @@ func (m *Manager) mergeRunLatencySummaries(ctx context.Context, run *Run) {
 func (m *Manager) GetRun(ctx context.Context, runID string) (*Run, error) {
 	r, err := m.state.GetRun(ctx, runID)
 	if err != nil {
-		return m.persist.GetRunByID(ctx, runID)
+		pr, perr := m.persist.GetRunByID(ctx, runID)
+		if perr != nil {
+			return nil, perr
+		}
+		pr.JourneyMetrics = buildRunJourneyMetrics(pr.Metrics)
+		return pr, nil
 	}
 	metrics, _ := m.state.GetMetrics(ctx, runID)
 	if metrics != nil {
 		r.Metrics = *metrics
 	}
 	m.mergeRunLatencySummaries(ctx, r)
+	r.JourneyMetrics = buildRunJourneyMetrics(r.Metrics)
 	return r, nil
+}
+
+func buildRunJourneyMetrics(m RunMetrics) RunJourneyMetrics {
+	build := func(req, cb ActionMetrics) JourneyActionMetrics {
+		received := cb.Success + cb.Failure + cb.Timeout
+		successPct := 0.0
+		if req.Sent > 0 {
+			successPct = (float64(cb.Success) / float64(req.Sent)) * 100
+		}
+		return JourneyActionMetrics{
+			Sent:       req.Sent,
+			Received:   received,
+			Success:    cb.Success,
+			Failure:    cb.Failure,
+			Timeout:    cb.Timeout,
+			AvgMS:      cb.AvgMS,
+			P90MS:      cb.P90MS,
+			P95MS:      cb.P95MS,
+			P99MS:      cb.P99MS,
+			SuccessPct: successPct,
+		}
+	}
+	return RunJourneyMetrics{
+		Select:  build(m.Select, m.OnSelect),
+		Init:    build(m.Init, m.OnInit),
+		Confirm: build(m.Confirm, m.OnConfirm),
+	}
 }
 
 func (m *Manager) StopRun(ctx context.Context, sessionID string) (string, error) {
@@ -242,16 +293,32 @@ func (m *Manager) StopRun(ctx context.Context, sessionID string) (string, error)
 	return ps.ActiveRunID, nil
 }
 
-func (m *Manager) LinkTxn(ctx context.Context, txnID, runID, sessionID string) error {
-	return m.state.LinkTxn(ctx, txnID, runID, sessionID)
+func (m *Manager) LinkTxn(ctx context.Context, txnID, runID, sessionID string, verificationEnabled bool) error {
+	return m.state.LinkTxn(ctx, txnID, runID, sessionID, verificationEnabled)
 }
 
-func (m *Manager) GetTxnRoute(ctx context.Context, txnID string) (string, string, error) {
+func (m *Manager) GetTxnRoute(ctx context.Context, txnID string) (string, string, bool, error) {
 	return m.state.GetTxnRoute(ctx, txnID)
 }
 
 func (m *Manager) IncrMetric(ctx context.Context, runID, action, field string, delta int64) error {
 	return m.state.IncrMetric(ctx, runID, action, field, delta)
+}
+
+func (m *Manager) SetRunSystemMetrics(ctx context.Context, runID string, sys RunSystemMetrics) error {
+	r, err := m.state.GetRun(ctx, runID)
+	if err != nil || r == nil {
+		r, err = m.persist.GetRunByID(ctx, runID)
+		if err != nil || r == nil {
+			return err
+		}
+	}
+	r.SystemMetrics = sys
+	if err := m.state.CreateRun(ctx, r); err != nil {
+		return err
+	}
+	_ = m.persist.SaveRun(ctx, r)
+	return nil
 }
 
 func (m *Manager) SetDiscoveryPayload(ctx context.Context, txnID string, payload []byte) error {

@@ -106,7 +106,6 @@ See [`docs/latency_metrics.md`](docs/latency_metrics.md) for how latency is comp
 | `BAP_PRIVATE_KEY` | Base64 Ed25519 private key for signing (empty = no signing) |
 | `BAP_PUBLIC_KEY` | Base64 Ed25519 public key for verification |
 | `BAP_UNIQUE_KEY_ID` | Key ID for the `Signature keyId` field |
-| `VERIFICATION_ENABLE` | Verify inbound callback `Authorization` headers |
 | `MONGO_URI` | MongoDB connection string |
 | `MONGO_DB` | MongoDB database name |
 | `REDIS_URL` | Redis connection URL |
@@ -141,7 +140,7 @@ Error codes are namespaced: `SESSION_*` for session errors, `PIPELINE_*` for pip
 
 When `BAP_PRIVATE_KEY` is set, every outbound call includes an `Authorization` header with a BLAKE2b-512 digest signed with Ed25519.
 
-When `VERIFICATION_ENABLE=true`, inbound callbacks have their `Authorization` header verified against `BAP_PUBLIC_KEY`.
+Inbound callback `Authorization` verification is controlled per-session using `verification_enabled`.
 
 ### Mock BPP
 

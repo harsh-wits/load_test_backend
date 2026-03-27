@@ -3,6 +3,7 @@ package callbacks
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"time"
 
@@ -15,15 +16,9 @@ import (
 const ondcTimestampLayout = "2006-01-02T15:04:05.000Z07:00"
 
 func (c *Controller) verifyInbound(action string, ctx *fiber.Ctx) error {
-	// saving time by returning early if verification is not enabled
-	if !c.verification.Enabled {
-		return nil
-	}
-	log.Printf("[callbacks] verification enabled=%t", c.verification.Enabled)
+	// Verification is controlled per-session. Global flag is intentionally ignored.
 	authHeader := ctx.Get("Authorization")
 	hasHeader := authHeader != ""
-	log.Printf("[callbacks] verifying %s auth_header_present=%t verification_enabled=%t",
-		action, hasHeader, c.verification.Enabled)
 
 	if !hasHeader {
 		return nil
@@ -31,8 +26,22 @@ func (c *Controller) verifyInbound(action string, ctx *fiber.Ctx) error {
 
 	body := ctx.Body()
 	txnID := extractTxnID(body)
+	if txnID == "" {
+		return nil
+	}
 
-	err := ondcauth.VerifyAuthorisationHeader(authHeader, string(body), c.verification.PublicKey)
+	_, _, perSessionEnabled, err := c.sessions.GetTxnRoute(context.Background(), txnID)
+	if err != nil {
+		// If txn routing is missing for this txn, fail-open to avoid NACKing.
+		return nil
+	}
+	if !perSessionEnabled {
+		return nil
+	}
+
+	log.Printf("[callbacks] verifying %s txn_id=%s", action, txnID)
+
+	err = ondcauth.VerifyAuthorisationHeader(authHeader, string(body), c.verification.PublicKey)
 	if err != nil {
 		log.Printf("[callbacks] %s verification FAILED txn_id=%s error=%v", action, txnID, err)
 		return err
@@ -49,17 +58,24 @@ func (c *Controller) validatePayload(action string, ctx *fiber.Ctx) error {
 
 func extractTxnID(body []byte) string {
 	var env struct {
-		Context struct {
-			TransactionID string `json:"transaction_id"`
-		} `json:"context"`
+		Context any `json:"context"`
 	}
-	if json.Unmarshal(body, &env) == nil {
-		return env.Context.TransactionID
+	if json.Unmarshal(body, &env) != nil {
+		return ""
+	}
+
+	ctxMap, _ := env.Context.(map[string]any)
+	if ctxMap == nil {
+		return ""
+	}
+	if v, ok := ctxMap["transaction_id"]; ok && v != nil {
+		s := fmt.Sprint(v)
+		return s
 	}
 	return ""
 }
 
-func (c *Controller) recordCallback(action string, ctx *fiber.Ctx) {
+func (c *Controller) recordCallback(action string, ctx *fiber.Ctx, receivedAt time.Time) {
 	if c.store == nil || c.sessions == nil {
 		return
 	}
@@ -72,7 +88,7 @@ func (c *Controller) recordCallback(action string, ctx *fiber.Ctx) {
 		return
 	}
 
-	runID, sessionID, err := c.sessions.GetTxnRoute(context.Background(), txnID)
+	runID, sessionID, _, err := c.sessions.GetTxnRoute(context.Background(), txnID)
 	if err != nil {
 		return
 	}
@@ -81,24 +97,40 @@ func (c *Controller) recordCallback(action string, ctx *fiber.Ctx) {
 		log.Printf("[callbacks] runlog record FAILED action=%s run=%s txn=%s error=%v", action, runID, txnID, err)
 	}
 
-	// Latency measured for callback actions only: sent_at comes from the paired request stage.
-	c.recordLatencyEventOnCallback(action, runID, sessionID, txnID, body, latency.OutcomeSuccess)
+	outcome := latency.OutcomeSuccess
+	if ackStatus := extractInboundAckStatus(body); ackStatus != "" && ackStatus != "ACK" {
+		outcome = latency.OutcomeFailure
+	}
 
-	_ = c.sessions.IncrMetric(context.Background(), runID, action, "success", 1)
+	// Latency measured for callback actions only: sent_at comes from the paired request stage.
+	effectiveOutcome := c.recordLatencyEventOnCallback(action, runID, sessionID, txnID, body, receivedAt, outcome)
+
+	// Counters should reflect the outcome we store in Mongo.
+	_ = c.sessions.IncrMetric(context.Background(), runID, action, "sent", 1)
+	switch effectiveOutcome {
+	case latency.OutcomeSuccess:
+		_ = c.sessions.IncrMetric(context.Background(), runID, action, "success", 1)
+	case latency.OutcomeFailure:
+		_ = c.sessions.IncrMetric(context.Background(), runID, action, "failure", 1)
+	case latency.OutcomeTimeout:
+		_ = c.sessions.IncrMetric(context.Background(), runID, action, "timeout", 1)
+	default:
+		_ = c.sessions.IncrMetric(context.Background(), runID, action, "failure", 1)
+	}
 
 	if c.notifier != nil {
 		c.notifier.Notify(runID, action)
 	}
 }
 
-func (c *Controller) recordLatencyEventOnCallback(callbackAction, runID, sessionID, txnID string, body []byte, outcome latency.Outcome) {
+func (c *Controller) recordLatencyEventOnCallback(callbackAction, runID, sessionID, txnID string, body []byte, receivedAt time.Time, outcome latency.Outcome) latency.Outcome {
 	if c.store == nil || c.sessions == nil {
-		return
+		return outcome
 	}
 
 	persist := c.sessions.Persist()
 	if persist == nil {
-		return
+		return outcome
 	}
 
 	requestAction := ""
@@ -110,10 +142,9 @@ func (c *Controller) recordLatencyEventOnCallback(callbackAction, runID, session
 	case "on_confirm":
 		requestAction = "confirm"
 	default:
-		return
+		return outcome
 	}
 
-	receivedAt := time.Now().UTC()
 	const callbackTimeout = 30 * time.Second
 
 	sentAt, sentErr := c.store.GetTimestamp(runID, "pipeline_b", requestAction, txnID)
@@ -147,12 +178,18 @@ func (c *Controller) recordLatencyEventOnCallback(callbackAction, runID, session
 	// Body is currently unused, but keeping the call signature makes it easy to extend
 	// later if you decide to store failure details.
 	_ = body
-	if err := persist.UpsertRunLatencyEvent(context.Background(), ev); err != nil {
-		log.Printf("[callbacks] latency event upsert FAILED action=%s run=%s txn=%s error=%v", callbackAction, runID, txnID, err)
+	if c.enqueueLatencyEvent(ev) {
+		return effectiveOutcome
 	}
+	// Queue pressure fallback: keep correctness by writing synchronously if enqueue fails.
+	if err := persist.UpsertRunLatencyEvent(context.Background(), ev); err != nil {
+		log.Printf("[callbacks] latency sync fallback upsert FAILED action=%s run=%s txn=%s error=%v", callbackAction, runID, txnID, err)
+	}
+
+	return effectiveOutcome
 }
 
-func (c *Controller) recordCallbackFailure(action string, ctx *fiber.Ctx) {
+func (c *Controller) recordCallbackFailure(action string, ctx *fiber.Ctx, receivedAt time.Time) {
 	if c.store == nil || c.sessions == nil {
 		return
 	}
@@ -164,7 +201,7 @@ func (c *Controller) recordCallbackFailure(action string, ctx *fiber.Ctx) {
 	if txnID == "" {
 		return
 	}
-	runID, sessionID, err := c.sessions.GetTxnRoute(context.Background(), txnID)
+	runID, sessionID, _, err := c.sessions.GetTxnRoute(context.Background(), txnID)
 	if err != nil {
 		return
 	}
@@ -172,7 +209,37 @@ func (c *Controller) recordCallbackFailure(action string, ctx *fiber.Ctx) {
 	if err := c.store.Record(runID, "pipeline_b", action, txnID, body); err != nil {
 		log.Printf("[callbacks] runlog record FAILED action=%s run=%s txn=%s error=%v", action, runID, txnID, err)
 	}
-	c.recordLatencyEventOnCallback(action, runID, sessionID, txnID, body, latency.OutcomeFailure)
+
+	effectiveOutcome := c.recordLatencyEventOnCallback(action, runID, sessionID, txnID, body, receivedAt, latency.OutcomeFailure)
+	_ = c.sessions.IncrMetric(context.Background(), runID, action, "sent", 1)
+	switch effectiveOutcome {
+	case latency.OutcomeSuccess:
+		_ = c.sessions.IncrMetric(context.Background(), runID, action, "success", 1)
+	case latency.OutcomeFailure:
+		_ = c.sessions.IncrMetric(context.Background(), runID, action, "failure", 1)
+	case latency.OutcomeTimeout:
+		_ = c.sessions.IncrMetric(context.Background(), runID, action, "timeout", 1)
+	default:
+		_ = c.sessions.IncrMetric(context.Background(), runID, action, "failure", 1)
+	}
+
+	if c.notifier != nil {
+		c.notifier.Notify(runID, action)
+	}
+}
+
+func extractInboundAckStatus(body []byte) string {
+	var env struct {
+		Message struct {
+			Ack struct {
+				Status string `json:"status"`
+			} `json:"ack"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return ""
+	}
+	return env.Message.Ack.Status
 }
 
 func (c *Controller) writeAck(ctx *fiber.Ctx) error {

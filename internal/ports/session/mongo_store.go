@@ -206,6 +206,50 @@ func (s *MongoStore) UpsertRunLatencyEvent(ctx context.Context, e *latency.RunLa
 	return err
 }
 
+func (s *MongoStore) UpsertRunLatencyEventsBulk(ctx context.Context, events []*latency.RunLatencyEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	models := make([]mongodriver.WriteModel, 0, len(events))
+	for _, e := range events {
+		if e == nil {
+			continue
+		}
+		filter := bson.M{
+			"run_id": e.RunID,
+			"stage":  e.Stage,
+			"txn_id": e.TxnID,
+		}
+		doc := bson.M{
+			"session_id":    e.SessionID,
+			"run_id":        e.RunID,
+			"stage":         e.Stage,
+			"txn_id":        e.TxnID,
+			"sent_at":       e.SentAt,
+			"received_at":   e.ReceivedAt,
+			"latency_ms":    e.LatencyMS,
+			"outcome":       e.Outcome,
+			"recorded_at":   e.RecordedAt,
+			"timeout_cause": e.TimeoutCause,
+		}
+		model := mongodriver.NewUpdateOneModel().
+			SetFilter(filter).
+			SetUpdate(bson.M{"$setOnInsert": doc}).
+			SetUpsert(true)
+		models = append(models, model)
+	}
+	if len(models) == 0 {
+		return nil
+	}
+	start := time.Now()
+	_, err := s.latencyEvents.BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false))
+	if err != nil {
+		return err
+	}
+	log.Printf("[mongo] latency bulk upsert ok count=%d elapsed_ms=%d", len(models), time.Since(start).Milliseconds())
+	return nil
+}
+
 func (s *MongoStore) UpsertRunLatencySummary(ctx context.Context, sum *latency.RunLatencySummary) error {
 	if sum == nil {
 		return nil
@@ -252,6 +296,25 @@ func (s *MongoStore) GetRunLatencyEvents(ctx context.Context, runID string, stag
 	}
 
 	cursor, err := s.latencyEvents.Find(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	for cursor.Next(ctx) {
+		var e latency.RunLatencyEvent
+		if err := cursor.Decode(&e); err != nil {
+			return nil, err
+		}
+		ev := e
+		out[ev.TxnID] = &ev
+	}
+	return out, nil
+}
+
+func (s *MongoStore) GetRunLatencyEventsForStage(ctx context.Context, runID string, stage latency.Stage) (map[string]*latency.RunLatencyEvent, error) {
+	out := map[string]*latency.RunLatencyEvent{}
+	cursor, err := s.latencyEvents.Find(ctx, bson.M{"run_id": runID, "stage": stage})
 	if err != nil {
 		return nil, err
 	}

@@ -29,8 +29,6 @@ type Config struct {
 	Domain      string
 	CityCode    string
 
-	VerificationEnable bool
-
 	SwaggerEnable bool
 
 	RunsFSRoot     string
@@ -83,7 +81,6 @@ func Load() (*Config, error) {
 		CountryCode:       getEnv("COUNTRY_CODE", "IND"),
 		Domain:            getEnv("DOMAIN", "nic2004:52110"),
 		CityCode:          getEnv("CITY_CODE", "std:080"),
-		VerificationEnable: getEnvBool("VERIFICATION_ENABLE", false),
 		SwaggerEnable: getEnvBool("SWAGGER_ENABLE", true),
 		RunsFSRoot:    getEnv("RUNS_FS_ROOT", "./runs"),
 		// Keep RunsFSEnable for existing callers, but derive it from RunPersistence.

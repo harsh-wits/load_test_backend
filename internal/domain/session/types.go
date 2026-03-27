@@ -35,6 +35,7 @@ type Session struct {
 	ExpiresAt   time.Time     `json:"expires_at" bson:"expires_at"`
 	CoreVersion string        `json:"core_version,omitempty" bson:"core_version,omitempty"`
 	Domain      string        `json:"domain,omitempty" bson:"domain,omitempty"`
+	VerificationEnabled bool  `json:"verification_enabled" bson:"verification_enabled"`
 }
 
 type CatalogState struct {
@@ -56,8 +57,45 @@ type Run struct {
 	DurationSec int        `json:"duration_sec" bson:"duration_sec"`
 	Status      string     `json:"status" bson:"status"`
 	Metrics     RunMetrics `json:"metrics" bson:"metrics"`
+	SystemMetrics RunSystemMetrics `json:"system_metrics" bson:"system_metrics"`
+	JourneyMetrics RunJourneyMetrics `json:"journey_metrics" bson:"journey_metrics"`
 	StartedAt   time.Time  `json:"started_at" bson:"started_at"`
 	CompletedAt time.Time  `json:"completed_at,omitempty" bson:"completed_at,omitempty"`
+}
+
+type RunSystemMetrics struct {
+	Throttle ThrottleMetrics `json:"throttle" bson:"throttle"`
+}
+
+type ThrottleMetrics struct {
+	TargetRPS    int   `json:"target_rps" bson:"target_rps"`
+	AcquireCalls int64 `json:"acquire_calls" bson:"acquire_calls"`
+	Allowed      int64 `json:"allowed" bson:"allowed"`
+	Retries      int64 `json:"retries" bson:"retries"`
+	DenyGlobal   int64 `json:"deny_global" bson:"deny_global"`
+	DenySession  int64 `json:"deny_session" bson:"deny_session"`
+	DenyOther    int64 `json:"deny_other" bson:"deny_other"`
+	WaitTotalMS  int64 `json:"wait_total_ms" bson:"wait_total_ms"`
+	WaitMaxMS    int64 `json:"wait_max_ms" bson:"wait_max_ms"`
+}
+
+type JourneyActionMetrics struct {
+	Sent       int64   `json:"sent" bson:"sent"`
+	Received   int64   `json:"received" bson:"received"`
+	Success    int64   `json:"success" bson:"success"`
+	Failure    int64   `json:"failure" bson:"failure"`
+	Timeout    int64   `json:"timeout" bson:"timeout"`
+	AvgMS      float64 `json:"avg_ms" bson:"avg_ms"`
+	P90MS      float64 `json:"p90_ms" bson:"p90_ms"`
+	P95MS      float64 `json:"p95_ms" bson:"p95_ms"`
+	P99MS      float64 `json:"p99_ms" bson:"p99_ms"`
+	SuccessPct float64 `json:"success_pct" bson:"success_pct"`
+}
+
+type RunJourneyMetrics struct {
+	Select  JourneyActionMetrics `json:"select" bson:"select"`
+	Init    JourneyActionMetrics `json:"init" bson:"init"`
+	Confirm JourneyActionMetrics `json:"confirm" bson:"confirm"`
 }
 
 type ActionMetrics struct {

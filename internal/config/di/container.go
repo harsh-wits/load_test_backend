@@ -112,7 +112,6 @@ func (c *Container) RegisterRoutes(app *fiber.App) error {
 		c.store, c.sessions, notifier,
 		domainPipeline.NoopValidator{},
 		callbackHandlers.VerificationConfig{
-			Enabled:   c.cfg.VerificationEnable,
 			PublicKey: c.cfg.BAPPublicKey,
 		},
 	).Register(app)
@@ -122,11 +121,11 @@ func (c *Container) RegisterRoutes(app *fiber.App) error {
 
 func (c *Container) Close() error {
 	var firstErr error
-	if err := c.redis.Close(); err != nil && firstErr == nil {
+	if err := c.redis.Close(); err != nil {
 		firstErr = err
 	}
-	if c.mongo != nil {
-		if err := c.mongo.Close(); err != nil && firstErr == nil {
+	if c.mongo != nil && firstErr == nil {
+		if err := c.mongo.Close(); err != nil {
 			firstErr = err
 		}
 	}

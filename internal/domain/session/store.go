@@ -25,8 +25,8 @@ type StateStore interface {
 	IncrMetric(ctx context.Context, runID, action, field string, delta int64) error
 	GetMetrics(ctx context.Context, runID string) (*RunMetrics, error)
 
-	LinkTxn(ctx context.Context, txnID, runID, sessionID string) error
-	GetTxnRoute(ctx context.Context, txnID string) (runID, sessionID string, err error)
+	LinkTxn(ctx context.Context, txnID, runID, sessionID string, verificationEnabled bool) error
+	GetTxnRoute(ctx context.Context, txnID string) (runID, sessionID string, verificationEnabled bool, err error)
 
 	SetDiscoveryPayload(ctx context.Context, txnID string, payload []byte) error
 	GetDiscoveryPayload(ctx context.Context, txnID string) ([]byte, error)
@@ -48,7 +48,9 @@ type PersistStore interface {
 	GetRunPayloads(ctx context.Context, runID string) ([]*RunPayload, error)
 
 	UpsertRunLatencyEvent(ctx context.Context, e *latency.RunLatencyEvent) error
+	UpsertRunLatencyEventsBulk(ctx context.Context, events []*latency.RunLatencyEvent) error
 	UpsertRunLatencySummary(ctx context.Context, s *latency.RunLatencySummary) error
 	GetRunLatencyEvents(ctx context.Context, runID string, stage latency.Stage, txnIDs []string) (map[string]*latency.RunLatencyEvent, error)
+	GetRunLatencyEventsForStage(ctx context.Context, runID string, stage latency.Stage) (map[string]*latency.RunLatencyEvent, error)
 	GetRunLatencySummaries(ctx context.Context, runID string) (map[latency.Stage]*latency.RunLatencySummary, error)
 }

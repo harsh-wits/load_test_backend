@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"strings"
 	"time"
 
@@ -52,18 +55,22 @@ func NewController(
 }
 
 func (c *Controller) Register(app *fiber.App) {
+	app.Get("/runs/:run_id/report", c.getRunReportByID)
+
 	s := app.Group("/sessions")
 	s.Get("/", c.listSessions)
 	s.Post("/", c.createSession)
 	s.Delete("/", c.clearSessions)
 	s.Get("/:id", c.getSession)
 	s.Delete("/:id", c.deleteSession)
+	s.Put("/:id/verification", c.setSessionVerification)
 	s.Get("/:id/discovery/payload", c.generateSearchPayload)
 	s.Post("/:id/discovery", c.startDiscovery)
 	s.Put("/:id/catalog", c.uploadCatalog)
 	s.Post("/:id/preorder", c.startPreorder)
 	s.Get("/:id/runs", c.listRuns)
 	s.Get("/:id/runs/:run_id", c.getRun)
+	s.Get("/:id/runs/:run_id/report", c.getRunReport)
 	s.Post("/:id/runs/:run_id/stop", c.stopRun)
 	s.Get("/:id/report", c.sessionReport)
 }
@@ -183,6 +190,33 @@ func (c *Controller) clearSessions(ctx *fiber.Ctx) error {
 	return ctx.JSON(fiber.Map{"deleted": deleted})
 }
 
+type setVerificationRequest struct {
+	Enabled *bool `json:"enabled"`
+}
+
+func (c *Controller) setSessionVerification(ctx *fiber.Ctx) error {
+	sessionID := ctx.Params("id")
+
+	preorder, err := c.sessions.GetPreorderState(ctx.Context(), sessionID)
+	if err != nil {
+		return err
+	}
+	if preorder != nil && preorder.Status == session.PreorderRunning {
+		return apierror.NewCustomError(fiber.StatusConflict, "RUN_ACTIVE_4091", "cannot update verification while a run is active")
+	}
+
+	var req setVerificationRequest
+	if err := ctx.BodyParser(&req); err != nil || req.Enabled == nil {
+		return apierror.ErrInvalidRequestBody
+	}
+
+	updated, err := c.sessions.SetVerificationEnabled(ctx.Context(), sessionID, *req.Enabled)
+	if err != nil {
+		return err
+	}
+	return ctx.JSON(updated)
+}
+
 // --- Discovery ---
 
 func (c *Controller) generateSearchPayload(ctx *fiber.Ctx) error {
@@ -246,6 +280,7 @@ func (c *Controller) startDiscovery(ctx *fiber.Ctx) error {
 	if err != nil {
 		return apierror.ErrInvalidRequestBody
 	}
+	_ = c.sessions.LinkTxn(context.Background(), searchTxnID, "discovery", sess.ID, sess.VerificationEnabled)
 
 	log.Printf("[discovery] session=%s search_txn_id=%s", sess.ID, searchTxnID)
 
@@ -340,6 +375,152 @@ type preorderRequest struct {
 	TransactionID string `json:"transaction_id,omitempty"`
 }
 
+type pacingThrottle struct {
+	base     domainPipeline.Throttle
+	interval time.Duration
+	mu       sync.Mutex
+	next     time.Time
+	acquireCalls  atomic.Int64
+	allowedCalls  atomic.Int64
+	retryCount    atomic.Int64
+	waitTotalMs   atomic.Int64
+	waitMaxMs     atomic.Int64
+	denyGlobal    atomic.Int64
+	denySession   atomic.Int64
+	denyOther     atomic.Int64
+}
+
+type throttleSnapshot struct {
+	AcquireCalls int64
+	Allowed      int64
+	Retries      int64
+	DenyGlobal   int64
+	DenySession  int64
+	DenyOther    int64
+	WaitTotalMS  int64
+	WaitMaxMS    int64
+}
+
+type reasonAwareThrottle interface {
+	AcquireWithReason(ctx context.Context, sessionID string) (bool, string)
+}
+
+func newPacingThrottle(base domainPipeline.Throttle, rps int) *pacingThrottle {
+	if base == nil || rps <= 0 {
+		return &pacingThrottle{base: base, interval: 0}
+	}
+	return &pacingThrottle{
+		base:     base,
+		interval: time.Second / time.Duration(rps),
+	}
+}
+
+func (t *pacingThrottle) Acquire(ctx context.Context, sessionID string) bool {
+	if t == nil || t.base == nil || t.interval <= 0 {
+		return true
+	}
+
+	for {
+		t.acquireCalls.Add(1)
+		var wait time.Duration
+		t.mu.Lock()
+		now := time.Now()
+		if t.next.IsZero() {
+			t.next = now
+		}
+		if now.Before(t.next) {
+			wait = t.next.Sub(now)
+		}
+		t.mu.Unlock()
+
+		if wait > 0 {
+			waitMs := wait.Milliseconds()
+			t.waitTotalMs.Add(waitMs)
+			for {
+				cur := t.waitMaxMs.Load()
+				if waitMs <= cur {
+					break
+				}
+				if t.waitMaxMs.CompareAndSwap(cur, waitMs) {
+					break
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(wait):
+			}
+		}
+
+		allowed := false
+		reason := ""
+		if withReason, ok := t.base.(reasonAwareThrottle); ok {
+			allowed, reason = withReason.AcquireWithReason(ctx, sessionID)
+		} else {
+			allowed = t.base.Acquire(ctx, sessionID)
+		}
+		if allowed {
+			t.allowedCalls.Add(1)
+			t.mu.Lock()
+			t.next = time.Now().Add(t.interval)
+			t.mu.Unlock()
+			return true
+		}
+		switch reason {
+		case "global":
+			t.denyGlobal.Add(1)
+		case "session":
+			t.denySession.Add(1)
+		default:
+			t.denyOther.Add(1)
+		}
+		t.retryCount.Add(1)
+
+		// Base limiter denied; try again shortly without advancing the pacing schedule.
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func (t *pacingThrottle) LogSummary(runID, sessionID string, targetRPS int) {
+	if t == nil {
+		return
+	}
+	log.Printf(
+		"[throttle] run=%s session=%s target_rps=%d acquire_calls=%d allowed=%d retries=%d deny_global=%d deny_session=%d deny_other=%d wait_total_ms=%d wait_max_ms=%d",
+		runID,
+		sessionID,
+		targetRPS,
+		t.acquireCalls.Load(),
+		t.allowedCalls.Load(),
+		t.retryCount.Load(),
+		t.denyGlobal.Load(),
+		t.denySession.Load(),
+		t.denyOther.Load(),
+		t.waitTotalMs.Load(),
+		t.waitMaxMs.Load(),
+	)
+}
+
+func (t *pacingThrottle) Snapshot() throttleSnapshot {
+	if t == nil {
+		return throttleSnapshot{}
+	}
+	return throttleSnapshot{
+		AcquireCalls: t.acquireCalls.Load(),
+		Allowed:      t.allowedCalls.Load(),
+		Retries:      t.retryCount.Load(),
+		DenyGlobal:   t.denyGlobal.Load(),
+		DenySession:  t.denySession.Load(),
+		DenyOther:    t.denyOther.Load(),
+		WaitTotalMS:  t.waitTotalMs.Load(),
+		WaitMaxMS:    t.waitMaxMs.Load(),
+	}
+}
+
 func (c *Controller) startPreorder(ctx *fiber.Ctx) error {
 	sess, err := c.sessions.Get(ctx.Context(), ctx.Params("id"))
 	if err != nil {
@@ -360,6 +541,17 @@ func (c *Controller) startPreorder(ctx *fiber.Ctx) error {
 	}
 	if req.DurationSec <= 0 {
 		req.DurationSec = int(c.cfg.DefaultDuration.Seconds())
+	}
+	if req.RPS > c.cfg.PerSessionRPSLimit {
+		return apierror.NewCustomError(
+			422,
+			"VALIDATION_4222",
+			"Requested rps exceeds per-session limit",
+			fiber.Map{
+				"requested_rps":        req.RPS,
+				"per_session_rps_limit": c.cfg.PerSessionRPSLimit,
+			},
+		)
 	}
 
 	run, err := c.sessions.StartRun(ctx.Context(), sess.ID, sess.BPPID, req.RPS, req.DurationSec)
@@ -390,9 +582,10 @@ func (c *Controller) startPreorder(ctx *fiber.Ctx) error {
 	baseURL := sess.BPPURI
 
 	c.coordinator.SetTxnLinker(func(runID, txnID string) {
-		_ = c.sessions.LinkTxn(context.Background(), txnID, runID, sess.ID)
+		_ = c.sessions.LinkTxn(context.Background(), txnID, runID, sess.ID, sess.VerificationEnabled)
 	})
-	c.coordinator.SetThrottle(c.rateLimiter, sess.ID)
+	pacing := newPacingThrottle(c.rateLimiter, req.RPS)
+	c.coordinator.SetThrottle(pacing, sess.ID)
 	c.coordinator.SetCoreVersion(sess.CoreVersion)
 
 	log.Printf("[preorder] starting session=%s run=%s batch=%d max_in_flight=%d",
@@ -406,12 +599,32 @@ func (c *Controller) startPreorder(ctx *fiber.Ctx) error {
 				status = "failed"
 			}
 			_ = c.finalizeRunLatencies(bgCtx, sess.ID, run.ID)
+			snap := pacing.Snapshot()
+			_ = c.sessions.SetRunSystemMetrics(bgCtx, run.ID, session.RunSystemMetrics{
+				Throttle: session.ThrottleMetrics{
+					TargetRPS:    req.RPS,
+					AcquireCalls: snap.AcquireCalls,
+					Allowed:      snap.Allowed,
+					Retries:      snap.Retries,
+					DenyGlobal:   snap.DenyGlobal,
+					DenySession:  snap.DenySession,
+					DenyOther:    snap.DenyOther,
+					WaitTotalMS:  snap.WaitTotalMS,
+					WaitMaxMS:    snap.WaitMaxMS,
+				},
+			})
 			_ = c.sessions.FinishRun(bgCtx, sess.ID, run.ID, status)
 			c.notifier.Reset(run.ID)
 			c.flushRun(run.ID)
+			pacing.LogSummary(run.ID, sess.ID, req.RPS)
+			if limiter, ok := c.rateLimiter.(interface{ Stats() session.RateLimiterStats }); ok {
+				stats := limiter.Stats()
+				log.Printf("[rate_limiter] stats allowed=%d denied_global=%d denied_session=%d denied_other=%d redis_errors=%d",
+					stats.Allowed, stats.DeniedGlobal, stats.DeniedSession, stats.DeniedOther, stats.RedisErrors)
+			}
 		}()
 
-		c.runPreorder(bgCtx, run.ID, sess.ID, baseURL, selects, txnIDs, maxInFlight)
+		c.runPreorder(bgCtx, run.ID, baseURL, selects, txnIDs, maxInFlight)
 	}()
 
 	return ctx.Status(fiber.StatusAccepted).JSON(fiber.Map{
@@ -443,6 +656,141 @@ func (c *Controller) getRun(ctx *fiber.Ctx) error {
 		return apierror.ErrRunNotFound
 	}
 	return ctx.JSON(run)
+}
+
+func successLatenciesFromEvents(events map[string]*latency.RunLatencyEvent) []int64 {
+	out := make([]int64, 0, len(events))
+	for _, ev := range events {
+		if ev == nil || ev.Outcome != latency.OutcomeSuccess || ev.LatencyMS == nil {
+			continue
+		}
+		out = append(out, *ev.LatencyMS)
+	}
+	return out
+}
+
+func fallbackLatencyFromJourney(j session.JourneyActionMetrics) (p50, p95, max int64) {
+	p95 = int64(math.Round(j.P95MS))
+	max = int64(math.Round(j.P99MS))
+	if max == 0 {
+		max = int64(math.Round(j.P90MS))
+	}
+	return 0, p95, max
+}
+
+func (c *Controller) journeyStageForReport(ctx context.Context, runID string, stage latency.Stage, j session.JourneyActionMetrics) fiber.Map {
+	p50, p95, max := int64(0), int64(0), int64(0)
+	hasSamples := false
+	if persist := c.sessions.Persist(); persist != nil {
+		if events, err := persist.GetRunLatencyEventsForStage(ctx, runID, stage); err == nil && len(events) > 0 {
+			lat := successLatenciesFromEvents(events)
+			if len(lat) > 0 {
+				p50, p95, max = latency.ComputeP50P95MaxFromSuccessLatenciesMs(lat)
+				hasSamples = true
+			}
+		}
+	}
+	if !hasSamples {
+		p50, p95, max = fallbackLatencyFromJourney(j)
+	}
+
+	var successRate float64
+	if j.Sent > 0 {
+		successRate = float64(j.Success) / float64(j.Sent)
+	}
+
+	return fiber.Map{
+		"requests_sent":      j.Sent,
+		"callbacks_received": j.Received,
+		"success_rate":       successRate,
+		"latency_ms": fiber.Map{
+			"p50": p50,
+			"p95": p95,
+			"max": max,
+		},
+		"errors": fiber.Map{
+			"timeout":           j.Timeout,
+			"invalid_response": j.Failure,
+		},
+	}
+}
+
+func (c *Controller) getRunReport(ctx *fiber.Ctx) error {
+	sessionID := ctx.Params("id")
+	runID := ctx.Params("run_id")
+
+	sess, err := c.sessions.GetAny(ctx.Context(), sessionID)
+	if err != nil {
+		return err
+	}
+	run, err := c.sessions.GetRun(ctx.Context(), runID)
+	if err != nil || run == nil {
+		return apierror.ErrRunNotFound
+	}
+	if run.SessionID != sessionID {
+		return apierror.ErrRunNotFound
+	}
+
+	return c.writeRunReport(ctx, sess, run)
+}
+
+func (c *Controller) getRunReportByID(ctx *fiber.Ctx) error {
+	runID := ctx.Params("run_id")
+	run, err := c.sessions.GetRun(ctx.Context(), runID)
+	if err != nil || run == nil {
+		return apierror.ErrRunNotFound
+	}
+	sess, err := c.sessions.GetAny(ctx.Context(), run.SessionID)
+	if err != nil {
+		return err
+	}
+	return c.writeRunReport(ctx, sess, run)
+}
+
+func (c *Controller) writeRunReport(ctx *fiber.Ctx, sess *session.Session, run *session.Run) error {
+	if run == nil {
+		return apierror.ErrRunNotFound
+	}
+	runID := run.ID
+	ctxBg := ctx.Context()
+	jm := run.JourneyMetrics
+	journey := fiber.Map{
+		"select":  c.journeyStageForReport(ctxBg, runID, latency.StageOnSelect, jm.Select),
+		"init":    c.journeyStageForReport(ctxBg, runID, latency.StageOnInit, jm.Init),
+		"confirm": c.journeyStageForReport(ctxBg, runID, latency.StageOnConfirm, jm.Confirm),
+	}
+
+	totalReq := jm.Select.Sent + jm.Init.Sent + jm.Confirm.Sent
+	totalAckOK := jm.Select.Success + jm.Init.Success + jm.Confirm.Success
+	var overall float64
+	if totalReq > 0 {
+		overall = float64(totalAckOK) / float64(totalReq)
+	}
+
+	runOut := fiber.Map{
+		"id":                   run.ID,
+		"session_id":           run.SessionID,
+		"bpp_id":               run.BPPID,
+		"status":               run.Status,
+		"rps":                  run.RPS,
+		"duration_sec":         run.DurationSec,
+		"started_at":           run.StartedAt,
+		"total_requests":       totalReq,
+		"overall_success_rate": overall,
+	}
+	if !run.CompletedAt.IsZero() {
+		runOut["completed_at"] = run.CompletedAt
+	}
+
+	return ctx.JSON(fiber.Map{
+		"generated_at": time.Now().UTC(),
+		"session":      sess,
+		"journey":      journey,
+		"run":          runOut,
+		"system": fiber.Map{
+			"throttle": run.SystemMetrics.Throttle,
+		},
+	})
 }
 
 func (c *Controller) stopRun(ctx *fiber.Ctx) error {
@@ -516,7 +864,7 @@ func (c *Controller) sessionReport(ctx *fiber.Ctx) error {
 // --- Preorder stage execution ---
 
 func (c *Controller) runPreorder(
-	ctx context.Context, runID, sessionID, baseURL string,
+	ctx context.Context, runID, baseURL string,
 	selects []domainPipeline.SelectPayload,
 	txnIDs []string, maxInFlight int,
 ) {
@@ -620,21 +968,43 @@ func (c *Controller) finalizeRunLatencies(ctx context.Context, sessionID, runID 
 	}
 
 	for _, p := range pairs {
-		txnIDs, err := c.store.ListTxnIDs(runID, "pipeline_b", p.reqAction)
+		requestTxnIDs, err := c.store.ListTxnIDs(runID, "pipeline_b", p.reqAction)
 		if err != nil {
 			log.Printf("[latency] list sent txn_ids FAILED run=%s action=%s error=%v", runID, p.reqAction, err)
 			continue
 		}
 
-		existing, err := persist.GetRunLatencyEvents(ctx, runID, p.cbStage, txnIDs)
+		// Build summary population from callback events as the source of truth.
+		existing, err := persist.GetRunLatencyEventsForStage(ctx, runID, p.cbStage)
 		if err != nil {
 			log.Printf("[latency] fetch existing events FAILED run=%s stage=%s error=%v", runID, p.cbStage, err)
 			continue
 		}
 
+		// Union: any txn_id that either has a sent_at (request side) or has a callback event recorded.
+		txnIDSet := make(map[string]struct{}, len(requestTxnIDs)+len(existing))
+		for _, id := range requestTxnIDs {
+			if id == "" {
+				continue
+			}
+			txnIDSet[id] = struct{}{}
+		}
+		for id := range existing {
+			if id == "" {
+				continue
+			}
+			txnIDSet[id] = struct{}{}
+		}
+
+		txnIDs := make([]string, 0, len(txnIDSet))
+		for id := range txnIDSet {
+			txnIDs = append(txnIDs, id)
+		}
+
 		total := int64(len(txnIDs))
 		var successCount, failureCount, timeoutCount int64
 		successLatenciesMs := make([]int64, 0, len(txnIDs))
+		missingEvents := make([]*latency.RunLatencyEvent, 0, len(txnIDs))
 
 		for _, txnID := range txnIDs {
 			if ev, ok := existing[txnID]; ok && ev != nil {
@@ -655,32 +1025,18 @@ func (c *Controller) finalizeRunLatencies(ctx context.Context, sessionID, runID 
 			}
 
 			sentAt, tsErr := c.store.GetTimestamp(runID, "pipeline_b", p.reqAction, txnID)
-			if tsErr != nil {
-				// Without sent_at we cannot classify precisely; treat it as failure for counters.
-				failureCount++
-				ev := &latency.RunLatencyEvent{
-					SessionID:   sessionID,
-					RunID:       runID,
-					Stage:       p.cbStage,
-					TxnID:       txnID,
-					SentAt:      cutoffAt,
-					ReceivedAt: nil,
-					LatencyMS:   nil,
-					Outcome:     latency.OutcomeFailure,
-					RecordedAt:  cutoffAt,
-				}
-				if err := persist.UpsertRunLatencyEvent(ctx, ev); err != nil {
-					log.Printf("[latency] upsert missing event (missing sent_at) FAILED run=%s stage=%s txn=%s error=%v", runID, p.cbStage, txnID, err)
-				}
-				continue
-			}
-
 			outcome := latency.OutcomeFailure
-			if cutoffAt.Sub(sentAt) >= callbackTimeout {
-				outcome = latency.OutcomeTimeout
-				timeoutCount++
-			} else {
+			if tsErr != nil {
+				// No sent_at and no callback event => treat as failure (should be rare).
+				sentAt = cutoffAt
 				failureCount++
+			} else {
+				if cutoffAt.Sub(sentAt) >= callbackTimeout {
+					outcome = latency.OutcomeTimeout
+					timeoutCount++
+				} else {
+					failureCount++
+				}
 			}
 
 			ev := &latency.RunLatencyEvent{
@@ -694,8 +1050,19 @@ func (c *Controller) finalizeRunLatencies(ctx context.Context, sessionID, runID 
 				Outcome:     outcome,
 				RecordedAt:  cutoffAt,
 			}
-			if err := persist.UpsertRunLatencyEvent(ctx, ev); err != nil {
-				log.Printf("[latency] upsert missing event FAILED run=%s stage=%s txn=%s error=%v", runID, p.cbStage, txnID, err)
+			missingEvents = append(missingEvents, ev)
+		}
+		if len(missingEvents) > 0 {
+			start := time.Now()
+			if err := persist.UpsertRunLatencyEventsBulk(ctx, missingEvents); err != nil {
+				log.Printf("[latency] bulk upsert missing events FAILED run=%s stage=%s count=%d error=%v", runID, p.cbStage, len(missingEvents), err)
+				for _, ev := range missingEvents {
+					if upsertErr := persist.UpsertRunLatencyEvent(ctx, ev); upsertErr != nil {
+						log.Printf("[latency] fallback upsert missing event FAILED run=%s stage=%s txn=%s error=%v", runID, p.cbStage, ev.TxnID, upsertErr)
+					}
+				}
+			} else {
+				log.Printf("[latency] bulk upsert missing events OK run=%s stage=%s count=%d elapsed_ms=%d", runID, p.cbStage, len(missingEvents), time.Since(start).Milliseconds())
 			}
 		}
 

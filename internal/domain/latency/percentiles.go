@@ -26,6 +26,17 @@ func percentileMs(sorted []int64, p float64) int64 {
 	return sorted[idx]
 }
 
+// ComputeP50P95MaxFromSuccessLatenciesMs uses only successful callback samples (same basis as summary percentiles).
+func ComputeP50P95MaxFromSuccessLatenciesMs(successLatenciesMs []int64) (p50, p95, max int64) {
+	if len(successLatenciesMs) == 0 {
+		return 0, 0, 0
+	}
+	sorted := make([]int64, len(successLatenciesMs))
+	copy(sorted, successLatenciesMs)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	return percentileMs(sorted, 0.50), percentileMs(sorted, 0.95), sorted[len(sorted)-1]
+}
+
 func ComputeSummaryFromSuccessLatenciesMs(successLatenciesMs []int64) (avgMs float64, p90Ms, p95Ms, p99Ms int64) {
 	if len(successLatenciesMs) == 0 {
 		return 0, 0, 0, 0

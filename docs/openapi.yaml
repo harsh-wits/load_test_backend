@@ -14,6 +14,30 @@ paths:
         '200':
           description: Service is healthy
 
+  /runs/{run_id}/report:
+    get:
+      summary: Get comprehensive run latency report by run ID (JSON)
+      description: >
+        Returns a browser-friendly JSON report for a specific run using only run_id.
+        Groups each request/callback pair (select+on_select, init+on_init, confirm+on_confirm)
+        under journey.select, journey.init, journey.confirm with counts, success_rate,
+        latency percentiles, and errors. Includes session context, run summary, and system throttle.
+      parameters:
+        - $ref: '#/components/parameters/RunID'
+      responses:
+        '200':
+          description: Comprehensive run report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunReport'
+        '404':
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /sessions:
     get:
       summary: List sessions by BPP (paginated)
@@ -274,6 +298,41 @@ paths:
         '422':
           description: Catalog not ready
 
+  /sessions/{id}/verification:
+    put:
+      summary: Toggle per-session callback Authorization verification
+      description: >
+        Enables/disables inbound Authorization verification for this session.
+        This applies only to runs started after the toggle.
+        Returns 409 while preorder.status is `running`.
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetSessionVerificationRequest'
+      responses:
+        '200':
+          description: Updated session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '404':
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Cannot update while a run is active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /sessions/{id}/runs:
     get:
       summary: List all runs for a session
@@ -308,6 +367,29 @@ paths:
                 $ref: '#/components/schemas/Run'
         '404':
           description: Run not found
+
+  /sessions/{id}/runs/{run_id}/report:
+    get:
+      summary: Get comprehensive run latency report (JSON)
+      description: >
+        Same payload as GET /runs/{run_id}/report; requires session id in path for consistency
+        with other session-scoped routes. Run must belong to the session.
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+        - $ref: '#/components/parameters/RunID'
+      responses:
+        '200':
+          description: Comprehensive run report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunReport'
+        '404':
+          description: Session or run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /sessions/{id}/runs/{run_id}/stop:
     post:
@@ -417,6 +499,8 @@ components:
           type: string
         domain:
           type: string
+        verification_enabled:
+          type: boolean
         status:
           type: string
           enum: [active, expired]
@@ -489,12 +573,91 @@ components:
           enum: [running, stopping, completed, failed]
         metrics:
           $ref: '#/components/schemas/RunMetrics'
+        journey_metrics:
+          $ref: '#/components/schemas/RunJourneyMetrics'
+        system_metrics:
+          $ref: '#/components/schemas/RunSystemMetrics'
         started_at:
           type: string
           format: date-time
         completed_at:
           type: string
           format: date-time
+
+    SetSessionVerificationRequest:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+          description: true to enable verification, false to disable
+
+    RunSystemMetrics:
+      type: object
+      properties:
+        throttle:
+          $ref: '#/components/schemas/ThrottleMetrics'
+
+    JourneyActionMetrics:
+      type: object
+      properties:
+        sent:
+          type: integer
+        received:
+          type: integer
+        success:
+          type: integer
+        failure:
+          type: integer
+        timeout:
+          type: integer
+        avg_ms:
+          type: number
+          format: float
+        p90_ms:
+          type: number
+          format: float
+        p95_ms:
+          type: number
+          format: float
+        p99_ms:
+          type: number
+          format: float
+        success_pct:
+          type: number
+          format: float
+
+    RunJourneyMetrics:
+      type: object
+      properties:
+        select:
+          $ref: '#/components/schemas/JourneyActionMetrics'
+        init:
+          $ref: '#/components/schemas/JourneyActionMetrics'
+        confirm:
+          $ref: '#/components/schemas/JourneyActionMetrics'
+
+    ThrottleMetrics:
+      type: object
+      properties:
+        target_rps:
+          type: integer
+        acquire_calls:
+          type: integer
+        allowed:
+          type: integer
+        retries:
+          type: integer
+        deny_global:
+          type: integer
+        deny_session:
+          type: integer
+        deny_other:
+          type: integer
+        wait_total_ms:
+          type: integer
+        wait_max_ms:
+          type: integer
 
     RunMetrics:
       type: object
@@ -535,6 +698,98 @@ components:
         p99_ms:
           type: number
           format: float
+
+    JourneyStageReport:
+      type: object
+      description: >
+        One logical unit (e.g. select + on_select): outbound requests vs inbound callbacks.
+      properties:
+        requests_sent:
+          type: integer
+        callbacks_received:
+          type: integer
+        success_rate:
+          type: number
+          format: float
+          description: ACK successes / requests_sent (0..1)
+        latency_ms:
+          type: object
+          properties:
+            p50:
+              type: integer
+              description: From successful callback samples when available; else 0 with fallback
+            p95:
+              type: integer
+            max:
+              type: integer
+        errors:
+          type: object
+          properties:
+            timeout:
+              type: integer
+            invalid_response:
+              type: integer
+              description: Failures including NACK / invalid payload (callback failure bucket)
+
+    JourneyReport:
+      type: object
+      properties:
+        select:
+          $ref: '#/components/schemas/JourneyStageReport'
+        init:
+          $ref: '#/components/schemas/JourneyStageReport'
+        confirm:
+          $ref: '#/components/schemas/JourneyStageReport'
+
+    RunReportRunSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        session_id:
+          type: string
+        bpp_id:
+          type: string
+        status:
+          type: string
+        rps:
+          type: integer
+        duration_sec:
+          type: integer
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        total_requests:
+          type: integer
+          description: Sum of select + init + confirm requests sent
+        overall_success_rate:
+          type: number
+          format: float
+          description: Sum of ACK successes across the three stages / total_requests
+
+    SystemReport:
+      type: object
+      properties:
+        throttle:
+          $ref: '#/components/schemas/ThrottleMetrics'
+
+    RunReport:
+      type: object
+      properties:
+        generated_at:
+          type: string
+          format: date-time
+        session:
+          $ref: '#/components/schemas/Session'
+        journey:
+          $ref: '#/components/schemas/JourneyReport'
+        run:
+          $ref: '#/components/schemas/RunReportRunSummary'
+        system:
+          $ref: '#/components/schemas/SystemReport'
 
     PaginatedSessions:
       type: object

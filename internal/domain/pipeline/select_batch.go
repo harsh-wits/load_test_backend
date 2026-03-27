@@ -18,16 +18,19 @@ type SelectPayload []byte
 func ExtractTransactionIDs(selects []SelectPayload) []string {
 	out := make([]string, 0, len(selects))
 	for _, p := range selects {
-		var env struct {
-			Context struct {
-				TransactionID string `json:"transaction_id"`
-			} `json:"context"`
-		}
+		var env map[string]any
 		if err := json.Unmarshal(p, &env); err != nil {
 			continue
 		}
-		if env.Context.TransactionID != "" {
-			out = append(out, env.Context.TransactionID)
+		ctxMap, _ := env["context"].(map[string]any)
+		if ctxMap == nil {
+			continue
+		}
+		if v, ok := ctxMap["transaction_id"]; ok && v != nil {
+			txnID := fmt.Sprint(v)
+			if txnID != "" {
+				out = append(out, txnID)
+			}
 		}
 	}
 	return out

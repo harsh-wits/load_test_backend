@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"seller_app_load_tester/internal/config"
 	"seller_app_load_tester/internal/domain/latency"
 	"seller_app_load_tester/internal/domain/session"
+	"seller_app_load_tester/internal/shared/apierror"
 )
 
 type noopStore struct{}
@@ -30,8 +32,8 @@ func (n *noopStore) GetRun(_ context.Context, _ string) (*session.Run, error)   
 func (n *noopStore) UpdateRunStatus(_ context.Context, _, _ string) error                                { return nil }
 func (n *noopStore) IncrMetric(_ context.Context, _, _, _ string, _ int64) error                         { return nil }
 func (n *noopStore) GetMetrics(_ context.Context, _ string) (*session.RunMetrics, error)                 { return nil, nil }
-func (n *noopStore) LinkTxn(_ context.Context, _, _, _ string) error                                     { return nil }
-func (n *noopStore) GetTxnRoute(_ context.Context, _ string) (string, string, error)                     { return "", "", nil }
+func (n *noopStore) LinkTxn(_ context.Context, _, _, _ string, _ bool) error                          { return nil }
+func (n *noopStore) GetTxnRoute(_ context.Context, _ string) (string, string, bool, error)            { return "", "", false, nil }
 func (n *noopStore) SetDiscoveryPayload(_ context.Context, _ string, _ []byte) error                     { return nil }
 func (n *noopStore) GetDiscoveryPayload(_ context.Context, _ string) ([]byte, error)                     { return nil, nil }
 func (n *noopStore) SaveSession(_ context.Context, _ *session.Session) error                             { return nil }
@@ -55,10 +57,16 @@ func (n *noopStore) GetRunPayloads(_ context.Context, _ string) ([]*session.RunP
 func (n *noopStore) UpsertRunLatencyEvent(_ context.Context, _ *latency.RunLatencyEvent) error {
 	return nil
 }
+func (n *noopStore) UpsertRunLatencyEventsBulk(_ context.Context, _ []*latency.RunLatencyEvent) error {
+	return nil
+}
 func (n *noopStore) UpsertRunLatencySummary(_ context.Context, _ *latency.RunLatencySummary) error {
 	return nil
 }
 func (n *noopStore) GetRunLatencyEvents(_ context.Context, _ string, _ latency.Stage, _ []string) (map[string]*latency.RunLatencyEvent, error) {
+	return map[string]*latency.RunLatencyEvent{}, nil
+}
+func (n *noopStore) GetRunLatencyEventsForStage(_ context.Context, _ string, _ latency.Stage) (map[string]*latency.RunLatencyEvent, error) {
 	return map[string]*latency.RunLatencyEvent{}, nil
 }
 func (n *noopStore) GetRunLatencySummaries(_ context.Context, _ string) (map[latency.Stage]*latency.RunLatencySummary, error) {
@@ -76,7 +84,7 @@ func newTestController() *Controller {
 
 func TestCreateSessionDefaultsFromConfig(t *testing.T) {
 	ctrl := newTestController()
-	app := fiber.New()
+	app := fiber.New(fiber.Config{ErrorHandler: apierror.ErrorHandler()})
 	ctrl.Register(app)
 
 	body := map[string]any{
@@ -94,6 +102,177 @@ func TestCreateSessionDefaultsFromConfig(t *testing.T) {
 	}
 	if resp.StatusCode != 201 {
 		t.Fatalf("expected status 201, got %d", resp.StatusCode)
+	}
+}
+
+type reportStore struct {
+	noopStore
+	session *session.Session
+	run     *session.Run
+	metrics *session.RunMetrics
+	sums    map[latency.Stage]*latency.RunLatencySummary
+}
+
+func (r *reportStore) GetSession(_ context.Context, id string) (*session.Session, error) {
+	if r.session == nil || r.session.ID != id {
+		return nil, fmt.Errorf("session not found")
+	}
+	return r.session, nil
+}
+
+func (r *reportStore) GetRun(_ context.Context, runID string) (*session.Run, error) {
+	if r.run == nil || r.run.ID != runID {
+		return nil, fmt.Errorf("run not found")
+	}
+	return r.run, nil
+}
+
+func (r *reportStore) GetMetrics(_ context.Context, runID string) (*session.RunMetrics, error) {
+	if r.run == nil || r.run.ID != runID || r.metrics == nil {
+		return nil, nil
+	}
+	return r.metrics, nil
+}
+
+func (r *reportStore) GetRunLatencySummaries(_ context.Context, runID string) (map[latency.Stage]*latency.RunLatencySummary, error) {
+	if r.run == nil || r.run.ID != runID {
+		return map[latency.Stage]*latency.RunLatencySummary{}, nil
+	}
+	return r.sums, nil
+}
+
+func TestGetRunReportReturnsComprehensiveJSON(t *testing.T) {
+	sess := &session.Session{
+		ID:                  "s-1",
+		BPPID:               "bpp-1",
+		BPPURI:              "https://bpp.example.com",
+		Status:              session.SessionActive,
+		VerificationEnabled: true,
+		CreatedAt:           time.Now().UTC(),
+		ExpiresAt:           time.Now().UTC().Add(time.Hour),
+		CoreVersion:         "1.2.0",
+		Domain:              "ONDC:RET10",
+	}
+	run := &session.Run{
+		ID:          "r-1",
+		SessionID:   "s-1",
+		BPPID:       "bpp-1",
+		RPS:         10,
+		DurationSec: 2,
+		Status:      "completed",
+		SystemMetrics: session.RunSystemMetrics{
+			Throttle: session.ThrottleMetrics{
+				TargetRPS: 10,
+				Allowed:   20,
+			},
+		},
+	}
+	metrics := &session.RunMetrics{
+		Select:   session.ActionMetrics{Sent: 20, Success: 20},
+		OnSelect: session.ActionMetrics{Sent: 20, Success: 19, Timeout: 1, AvgMS: 15},
+	}
+	sums := map[latency.Stage]*latency.RunLatencySummary{
+		latency.StageOnSelect: {
+			Stage:        latency.StageOnSelect,
+			Total:        20,
+			SuccessCount: 19,
+			TimeoutCount: 1,
+			AvgMS:        15,
+		},
+	}
+
+	store := &reportStore{session: sess, run: run, metrics: metrics, sums: sums}
+	mgr := session.NewManager(store, store, int(time.Hour.Seconds()))
+	ctrl := NewController(&config.Config{CoreVersion: "1.2.0", Domain: "ONDC:RET10"}, mgr, nil, nil, nil, nil, nil)
+	app := fiber.New(fiber.Config{ErrorHandler: apierror.ErrorHandler()})
+	ctrl.Register(app)
+
+	req := httptest.NewRequest("GET", "/sessions/s-1/runs/r-1/report", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	for _, key := range []string{"session", "journey", "run", "system", "generated_at"} {
+		if _, ok := body[key]; !ok {
+			t.Fatalf("expected key %q in report response", key)
+		}
+	}
+	journey, _ := body["journey"].(map[string]any)
+	for _, k := range []string{"select", "init", "confirm"} {
+		if journey == nil || journey[k] == nil {
+			t.Fatalf("expected journey.%s in report", k)
+		}
+	}
+}
+
+func TestGetRunReportRejectsRunOutsideSession(t *testing.T) {
+	sess := &session.Session{
+		ID:        "s-1",
+		BPPID:     "bpp-1",
+		BPPURI:    "https://bpp.example.com",
+		Status:    session.SessionActive,
+		CreatedAt: time.Now().UTC(),
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}
+	run := &session.Run{
+		ID:        "r-1",
+		SessionID: "s-2",
+		Status:    "completed",
+	}
+
+	store := &reportStore{session: sess, run: run, metrics: &session.RunMetrics{}}
+	mgr := session.NewManager(store, store, int(time.Hour.Seconds()))
+	ctrl := NewController(&config.Config{CoreVersion: "1.2.0", Domain: "ONDC:RET10"}, mgr, nil, nil, nil, nil, nil)
+	app := fiber.New(fiber.Config{ErrorHandler: apierror.ErrorHandler()})
+	ctrl.Register(app)
+
+	req := httptest.NewRequest("GET", "/sessions/s-1/runs/r-1/report", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != 404 {
+		t.Fatalf("expected status 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestGetRunReportByRunIDWithoutSessionID(t *testing.T) {
+	sess := &session.Session{
+		ID:        "s-1",
+		BPPID:     "bpp-1",
+		BPPURI:    "https://bpp.example.com",
+		Status:    session.SessionActive,
+		CreatedAt: time.Now().UTC(),
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}
+	run := &session.Run{
+		ID:          "r-1",
+		SessionID:   "s-1",
+		BPPID:       "bpp-1",
+		RPS:         5,
+		DurationSec: 2,
+		Status:      "completed",
+	}
+	store := &reportStore{session: sess, run: run, metrics: &session.RunMetrics{}, sums: map[latency.Stage]*latency.RunLatencySummary{}}
+	mgr := session.NewManager(store, store, int(time.Hour.Seconds()))
+	ctrl := NewController(&config.Config{CoreVersion: "1.2.0", Domain: "ONDC:RET10"}, mgr, nil, nil, nil, nil, nil)
+	app := fiber.New(fiber.Config{ErrorHandler: apierror.ErrorHandler()})
+	ctrl.Register(app)
+
+	req := httptest.NewRequest("GET", "/runs/r-1/report", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
 	}
 }
 

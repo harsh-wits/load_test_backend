@@ -84,7 +84,9 @@ func (c *BCoordinator) preparePayload(action string, raw []byte) (toSend []byte,
 	if ctxMap == nil {
 		return raw, "", nil
 	}
-	txnID, _ = ctxMap["transaction_id"].(string)
+	if v, ok := ctxMap["transaction_id"]; ok && v != nil {
+		txnID = fmt.Sprint(v)
+	}
 	if c.cfg.BAPURI != "" {
 		ctxMap["bap_uri"] = c.cfg.BAPURI
 	}

@@ -210,21 +210,33 @@ func (s *RedisStore) GetMetrics(ctx context.Context, runID string) (*domainSessi
 	return m, nil
 }
 
-func (s *RedisStore) LinkTxn(ctx context.Context, txnID, runID, sessionID string) error {
-	val := runID + ":" + sessionID
+func (s *RedisStore) LinkTxn(ctx context.Context, txnID, runID, sessionID string, verificationEnabled bool) error {
+	ver := "0"
+	if verificationEnabled {
+		ver = "1"
+	}
+	val := runID + ":" + sessionID + ":" + ver
 	return s.r.Set(ctx, txnKey(txnID), []byte(val), 10*time.Minute)
 }
 
-func (s *RedisStore) GetTxnRoute(ctx context.Context, txnID string) (string, string, error) {
+func (s *RedisStore) GetTxnRoute(ctx context.Context, txnID string) (string, string, bool, error) {
 	data, err := s.r.Get(ctx, txnKey(txnID))
 	if err != nil || data == nil {
-		return "", "", fmt.Errorf("txn route not found")
+		return "", "", false, fmt.Errorf("txn route not found")
 	}
-	parts := strings.SplitN(string(data), ":", 2)
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("invalid txn route format")
+	parts := strings.SplitN(string(data), ":", 3)
+	if len(parts) < 2 {
+		return "", "", false, fmt.Errorf("invalid txn route format")
 	}
-	return parts[0], parts[1], nil
+	verificationEnabled := false
+	if len(parts) == 3 {
+		verificationEnabled = parts[2] == "1"
+	}
+	// Backward compatibility: previously stored as `runID:sessionID` only.
+	if len(parts) == 2 {
+		verificationEnabled = true
+	}
+	return parts[0], parts[1], verificationEnabled, nil
 }
 
 func (s *RedisStore) SetDiscoveryPayload(ctx context.Context, txnID string, payload []byte) error {
