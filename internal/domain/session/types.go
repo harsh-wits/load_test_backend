@@ -27,15 +27,16 @@ const (
 )
 
 type Session struct {
-	ID          string        `json:"id" bson:"_id"`
-	BPPID       string        `json:"bpp_id" bson:"bpp_id"`
-	BPPURI      string        `json:"bpp_uri" bson:"bpp_uri"`
-	Status      SessionStatus `json:"status" bson:"status"`
-	CreatedAt   time.Time     `json:"created_at" bson:"created_at"`
-	ExpiresAt   time.Time     `json:"expires_at" bson:"expires_at"`
-	CoreVersion string        `json:"core_version,omitempty" bson:"core_version,omitempty"`
-	Domain      string        `json:"domain,omitempty" bson:"domain,omitempty"`
-	VerificationEnabled bool  `json:"verification_enabled" bson:"verification_enabled"`
+	ID                    string        `json:"id" bson:"_id"`
+	BPPID                 string        `json:"bpp_id" bson:"bpp_id"`
+	BPPURI                string        `json:"bpp_uri" bson:"bpp_uri"`
+	Status                SessionStatus `json:"status" bson:"status"`
+	CreatedAt             time.Time     `json:"created_at" bson:"created_at"`
+	ExpiresAt             time.Time     `json:"expires_at" bson:"expires_at"`
+	CoreVersion           string        `json:"core_version,omitempty" bson:"core_version,omitempty"`
+	Domain                string        `json:"domain,omitempty" bson:"domain,omitempty"`
+	VerificationEnabled   bool          `json:"verification_enabled" bson:"verification_enabled"`
+	ErrorInjectionEnabled bool          `json:"error_injection_enabled" bson:"error_injection_enabled"`
 }
 
 type CatalogState struct {
@@ -50,17 +51,17 @@ type PreorderState struct {
 }
 
 type Run struct {
-	ID          string     `json:"id" bson:"_id"`
-	SessionID   string     `json:"session_id" bson:"session_id"`
-	BPPID       string     `json:"bpp_id" bson:"bpp_id"`
-	RPS         int        `json:"rps" bson:"rps"`
-	DurationSec int        `json:"duration_sec" bson:"duration_sec"`
-	Status      string     `json:"status" bson:"status"`
-	Metrics     RunMetrics `json:"metrics" bson:"metrics"`
-	SystemMetrics RunSystemMetrics `json:"system_metrics" bson:"system_metrics"`
+	ID             string            `json:"id" bson:"_id"`
+	SessionID      string            `json:"session_id" bson:"session_id"`
+	BPPID          string            `json:"bpp_id" bson:"bpp_id"`
+	RPS            int               `json:"rps" bson:"rps"`
+	DurationSec    int               `json:"duration_sec" bson:"duration_sec"`
+	Status         string            `json:"status" bson:"status"`
+	Metrics        RunMetrics        `json:"metrics" bson:"metrics"`
+	SystemMetrics  RunSystemMetrics  `json:"system_metrics" bson:"system_metrics"`
 	JourneyMetrics RunJourneyMetrics `json:"journey_metrics" bson:"journey_metrics"`
-	StartedAt   time.Time  `json:"started_at" bson:"started_at"`
-	CompletedAt time.Time  `json:"completed_at,omitempty" bson:"completed_at,omitempty"`
+	StartedAt      time.Time         `json:"started_at" bson:"started_at"`
+	CompletedAt    time.Time         `json:"completed_at,omitempty" bson:"completed_at,omitempty"`
 }
 
 type RunSystemMetrics struct {
@@ -99,10 +100,10 @@ type RunJourneyMetrics struct {
 }
 
 type ActionMetrics struct {
-	Sent    int64 `json:"sent" bson:"sent"`
-	Success int64 `json:"success" bson:"success"`
-	Failure int64 `json:"failure" bson:"failure"`
-	Timeout int64 `json:"timeout" bson:"timeout"`
+	Sent    int64   `json:"sent" bson:"sent"`
+	Success int64   `json:"success" bson:"success"`
+	Failure int64   `json:"failure" bson:"failure"`
+	Timeout int64   `json:"timeout" bson:"timeout"`
 	AvgMS   float64 `json:"avg_ms" bson:"avg_ms"`
 	P90MS   float64 `json:"p90_ms" bson:"p90_ms"`
 	P95MS   float64 `json:"p95_ms" bson:"p95_ms"`

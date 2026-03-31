@@ -333,6 +333,46 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /sessions/{id}/error_injection:
+    put:
+      summary: Toggle per-session schema-error injection
+      description: >
+        Enables/disables per-session payload corruption for preorder stages (select/init/confirm).
+        When enabled, each stage-second sends a deterministic wrong subset:
+        rps<=1 => 0 wrong, 2<=rps<=9 => 1 wrong, rps>=10 => floor(10%).
+        Wrong payloads use fixed stage mutations:
+        select => wrong item.id + provider.id,
+        init => wrong item.id + fulfillment.id,
+        confirm => wrong fulfillment.id + invalid random order.state.
+        Returns 409 while preorder.status is `running`.
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetSessionErrorInjectionRequest'
+      responses:
+        '200':
+          description: Updated session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '404':
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Cannot update while a run is active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /sessions/{id}/runs:
     get:
       summary: List all runs for a session
@@ -501,6 +541,8 @@ components:
           type: string
         verification_enabled:
           type: boolean
+        error_injection_enabled:
+          type: boolean
         status:
           type: string
           enum: [active, expired]
@@ -591,6 +633,14 @@ components:
         enabled:
           type: boolean
           description: true to enable verification, false to disable
+
+    SetSessionErrorInjectionRequest:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+          description: true to enable schema-error injection, false to disable
 
     RunSystemMetrics:
       type: object

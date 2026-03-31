@@ -16,14 +16,16 @@ import (
 type TxnLinker func(runID, txnID string)
 
 type BCoordinator struct {
-	selectBatch SelectBatchService
-	store       runlog.Store
-	seller      seller.Client
-	cfg         *config.Config
-	linkTxn     TxnLinker
-	throttle    Throttle
-	sessionID   string
-	coreVersion string
+	selectBatch        SelectBatchService
+	store              runlog.Store
+	seller             seller.Client
+	cfg                *config.Config
+	linkTxn            TxnLinker
+	throttle           Throttle
+	sessionID          string
+	coreVersion        string
+	errorInjectEnabled bool
+	errorInjectRPS     int
 }
 
 func NewBCoordinator(
@@ -56,6 +58,11 @@ func (c *BCoordinator) SetCoreVersion(v string) {
 	c.coreVersion = v
 }
 
+func (c *BCoordinator) SetErrorInjection(enabled bool, rps int) {
+	c.errorInjectEnabled = enabled
+	c.errorInjectRPS = rps
+}
+
 func (c *BCoordinator) SelectBatchFromExample(batchSize int) ([]SelectPayload, error) {
 	path := filepath.Join("examples", "payloads", "select", "select.json")
 	return c.selectBatch.GenerateBatchFromExample(path, batchSize)
@@ -75,7 +82,7 @@ func (c *BCoordinator) Store() runlog.Store {
 	return c.store
 }
 
-func (c *BCoordinator) preparePayload(action string, raw []byte) (toSend []byte, txnID string, err error) {
+func (c *BCoordinator) preparePayload(action string, idx int, raw []byte) (toSend []byte, txnID string, err error) {
 	var env map[string]any
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return nil, "", fmt.Errorf("decode %s envelope: %w", action, err)
@@ -98,11 +105,99 @@ func (c *BCoordinator) preparePayload(action string, raw []byte) (toSend []byte,
 	} else if c.cfg.CoreVersion != "" {
 		ctxMap["core_version"] = c.cfg.CoreVersion
 	}
+	if c.shouldCorrupt(idx) {
+		if err := c.corruptForStage(action, idx, env); err != nil {
+			return nil, txnID, err
+		}
+	}
 	updated, err := json.Marshal(env)
 	if err != nil {
 		return nil, txnID, fmt.Errorf("encode %s envelope: %w", action, err)
 	}
 	return updated, txnID, nil
+}
+
+func (c *BCoordinator) shouldCorrupt(idx int) bool {
+	if !c.errorInjectEnabled || c.errorInjectRPS <= 1 {
+		return false
+	}
+	wrongCount := 1
+	if c.errorInjectRPS >= 10 {
+		wrongCount = c.errorInjectRPS / 10
+	}
+	return idx%c.errorInjectRPS < wrongCount
+}
+
+func (c *BCoordinator) corruptForStage(action string, idx int, env map[string]any) error {
+	msg, _ := env["message"].(map[string]any)
+	if msg == nil {
+		return fmt.Errorf("corrupt %s payload: message missing", action)
+	}
+	order, _ := msg["order"].(map[string]any)
+	if order == nil {
+		return fmt.Errorf("corrupt %s payload: order missing", action)
+	}
+	switch action {
+	case "select":
+		items, _ := order["items"].([]any)
+		if len(items) == 0 {
+			return fmt.Errorf("corrupt select payload: items missing")
+		}
+		item0, _ := items[0].(map[string]any)
+		if item0 == nil {
+			return fmt.Errorf("corrupt select payload: first item invalid")
+		}
+		provider, _ := order["provider"].(map[string]any)
+		if provider == nil {
+			return fmt.Errorf("corrupt select payload: provider missing")
+		}
+		item0["id"] = "wrong-item-id"
+		provider["id"] = "wrong-provider-id"
+		items[0] = item0
+		order["items"] = items
+		order["provider"] = provider
+	case "init":
+		items, _ := order["items"].([]any)
+		if len(items) == 0 {
+			return fmt.Errorf("corrupt init payload: items missing")
+		}
+		item0, _ := items[0].(map[string]any)
+		if item0 == nil {
+			return fmt.Errorf("corrupt init payload: first item invalid")
+		}
+		fulfillments, _ := order["fulfillments"].([]any)
+		if len(fulfillments) == 0 {
+			return fmt.Errorf("corrupt init payload: fulfillments missing")
+		}
+		f0, _ := fulfillments[0].(map[string]any)
+		if f0 == nil {
+			return fmt.Errorf("corrupt init payload: first fulfillment invalid")
+		}
+		item0["id"] = "wrong-item-id"
+		f0["id"] = "wrong-fulfillment-id"
+		items[0] = item0
+		fulfillments[0] = f0
+		order["items"] = items
+		order["fulfillments"] = fulfillments
+	case "confirm":
+		fulfillments, _ := order["fulfillments"].([]any)
+		if len(fulfillments) == 0 {
+			return fmt.Errorf("corrupt confirm payload: fulfillments missing")
+		}
+		f0, _ := fulfillments[0].(map[string]any)
+		if f0 == nil {
+			return fmt.Errorf("corrupt confirm payload: first fulfillment invalid")
+		}
+		f0["id"] = "wrong-fulfillment-id"
+		order["state"] = fmt.Sprintf("xyz-%d", idx)
+		fulfillments[0] = f0
+		order["fulfillments"] = fulfillments
+	default:
+		return nil
+	}
+	msg["order"] = order
+	env["message"] = msg
+	return nil
 }
 
 func (c *BCoordinator) RunSelectStage(ctx context.Context, runID, baseURL string, batch []SelectPayload, maxInFlight int) []DispatchResult {
@@ -115,7 +210,7 @@ func (c *BCoordinator) RunSelectStage(ctx context.Context, runID, baseURL string
 
 	results := DispatchConcurrentThrottled(ctx, payloads, maxInFlight, c.throttle, c.sessionID,
 		func(ctx context.Context, idx int, raw []byte) DispatchResult {
-			toSend, txnID, err := c.preparePayload("select", raw)
+			toSend, txnID, err := c.preparePayload("select", idx, raw)
 			if err != nil {
 				return DispatchResult{Index: idx, TxnID: txnID, Err: err}
 			}
@@ -145,7 +240,7 @@ func (c *BCoordinator) RunInitStage(ctx context.Context, runID, baseURL string, 
 
 	results := DispatchConcurrentThrottled(ctx, payloads, maxInFlight, c.throttle, c.sessionID,
 		func(ctx context.Context, idx int, raw []byte) DispatchResult {
-			toSend, txnID, err := c.preparePayload("init", raw)
+			toSend, txnID, err := c.preparePayload("init", idx, raw)
 			if err != nil {
 				return DispatchResult{Index: idx, TxnID: txnID, Err: err}
 			}
@@ -173,7 +268,7 @@ func (c *BCoordinator) RunConfirmStage(ctx context.Context, runID, baseURL strin
 
 	results := DispatchConcurrentThrottled(ctx, payloads, maxInFlight, c.throttle, c.sessionID,
 		func(ctx context.Context, idx int, raw []byte) DispatchResult {
-			toSend, txnID, err := c.preparePayload("confirm", raw)
+			toSend, txnID, err := c.preparePayload("confirm", idx, raw)
 			if err != nil {
 				return DispatchResult{Index: idx, TxnID: txnID, Err: err}
 			}

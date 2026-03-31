@@ -54,6 +54,7 @@ This starts Redis and Mongo alongside the app for a fully self-contained local e
 | POST | `/sessions` | Create a session (`bpp_id`, `bpp_uri`) |
 | GET | `/sessions/:id` | Get session state, catalog status, preorder status |
 | DELETE | `/sessions/:id` | Soft-delete session and clean up state |
+| PUT | `/sessions/:id/error_injection` | Enable/disable schema-error injection for preorder |
 
 #### Pipelines
 
@@ -141,6 +142,41 @@ Error codes are namespaced: `SESSION_*` for session errors, `PIPELINE_*` for pip
 When `BAP_PRIVATE_KEY` is set, every outbound call includes an `Authorization` header with a BLAKE2b-512 digest signed with Ed25519.
 
 Inbound callback `Authorization` verification is controlled per-session using `verification_enabled`.
+
+### Preorder error injection
+
+Schema-error injection is controlled per session using `error_injection_enabled` via `PUT /sessions/:id/error_injection` with body:
+
+```json
+{
+  "enabled": true
+}
+```
+
+Rules:
+- Enabled by default (disable explicitly if needed).
+- If `rps <= 1`, injection is disabled.
+- If `2 <= rps <= 9`, exactly 1 payload per stage-second is corrupted.
+- If `rps >= 10`, `floor(rps * 0.10)` payloads per stage-second are corrupted.
+- Corrupted payloads always use fixed 2-field mutations:
+  - `select`: wrong `item.id` and wrong `provider.id`
+  - `init`: wrong `item.id` and wrong `fulfillment.id`
+  - `confirm`: wrong `fulfillment.id` and invalid random `order.state`
+
+To toggle this for a specific session via `curl` (assuming backend on `localhost:8080`):
+
+```bash
+SESSION_ID=<your-session-id>
+
+curl -X PUT "http://localhost:8080/sessions/${SESSION_ID}/error_injection" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true}'
+
+# To disable again:
+curl -X PUT "http://localhost:8080/sessions/${SESSION_ID}/error_injection" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": false}'
+```
 
 ### Mock BPP
 

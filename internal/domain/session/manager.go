@@ -36,15 +36,16 @@ func (m *Manager) Create(ctx context.Context, bppID, bppURI, coreVersion, domain
 
 	now := time.Now().UTC()
 	s := &Session{
-		ID:          uuid.NewString(),
-		BPPID:       bppID,
-		BPPURI:      bppURI,
-		Status:      SessionActive,
-		CreatedAt:   now,
-		ExpiresAt:   now.Add(m.sessionTTL),
-		CoreVersion: coreVersion,
-		Domain:      domain,
-		VerificationEnabled: false, // default: disabled; can be enabled per-session via API
+		ID:                    uuid.NewString(),
+		BPPID:                 bppID,
+		BPPURI:                bppURI,
+		Status:                SessionActive,
+		CreatedAt:             now,
+		ExpiresAt:             now.Add(m.sessionTTL),
+		CoreVersion:           coreVersion,
+		Domain:                domain,
+		VerificationEnabled:   false, // default: disabled; can be enabled per-session via API
+		ErrorInjectionEnabled: true,  // default: enabled; can be disabled per-session via API
 	}
 
 	if err := m.state.CreateSession(ctx, s); err != nil {
@@ -72,6 +73,19 @@ func (m *Manager) SetVerificationEnabled(ctx context.Context, sessionID string, 
 		return nil, err
 	}
 	// Best-effort persistence to Mongo.
+	_ = m.persist.SaveSession(ctx, s)
+	return s, nil
+}
+
+func (m *Manager) SetErrorInjectionEnabled(ctx context.Context, sessionID string, enabled bool) (*Session, error) {
+	s, err := m.GetAny(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	s.ErrorInjectionEnabled = enabled
+	if err := m.state.CreateSession(ctx, s); err != nil {
+		return nil, err
+	}
 	_ = m.persist.SaveSession(ctx, s)
 	return s, nil
 }
@@ -355,5 +369,5 @@ func (m *Manager) GetRunHistory(ctx context.Context, sessionID string) ([]*Run, 
 	return m.persist.GetRunHistory(ctx, sessionID)
 }
 
-func (m *Manager) State() StateStore    { return m.state }
+func (m *Manager) State() StateStore     { return m.state }
 func (m *Manager) Persist() PersistStore { return m.persist }

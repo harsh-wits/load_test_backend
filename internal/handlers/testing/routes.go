@@ -7,9 +7,9 @@ import (
 	"log"
 	"math"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
-	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -64,6 +64,7 @@ func (c *Controller) Register(app *fiber.App) {
 	s.Get("/:id", c.getSession)
 	s.Delete("/:id", c.deleteSession)
 	s.Put("/:id/verification", c.setSessionVerification)
+	s.Put("/:id/error_injection", c.setSessionErrorInjection)
 	s.Get("/:id/discovery/payload", c.generateSearchPayload)
 	s.Post("/:id/discovery", c.startDiscovery)
 	s.Put("/:id/catalog", c.uploadCatalog)
@@ -211,6 +212,29 @@ func (c *Controller) setSessionVerification(ctx *fiber.Ctx) error {
 	}
 
 	updated, err := c.sessions.SetVerificationEnabled(ctx.Context(), sessionID, *req.Enabled)
+	if err != nil {
+		return err
+	}
+	return ctx.JSON(updated)
+}
+
+func (c *Controller) setSessionErrorInjection(ctx *fiber.Ctx) error {
+	sessionID := ctx.Params("id")
+
+	preorder, err := c.sessions.GetPreorderState(ctx.Context(), sessionID)
+	if err != nil {
+		return err
+	}
+	if preorder != nil && preorder.Status == session.PreorderRunning {
+		return apierror.NewCustomError(fiber.StatusConflict, "RUN_ACTIVE_4091", "cannot update error injection while a run is active")
+	}
+
+	var req setVerificationRequest
+	if err := ctx.BodyParser(&req); err != nil || req.Enabled == nil {
+		return apierror.ErrInvalidRequestBody
+	}
+
+	updated, err := c.sessions.SetErrorInjectionEnabled(ctx.Context(), sessionID, *req.Enabled)
 	if err != nil {
 		return err
 	}
@@ -376,18 +400,18 @@ type preorderRequest struct {
 }
 
 type pacingThrottle struct {
-	base     domainPipeline.Throttle
-	interval time.Duration
-	mu       sync.Mutex
-	next     time.Time
-	acquireCalls  atomic.Int64
-	allowedCalls  atomic.Int64
-	retryCount    atomic.Int64
-	waitTotalMs   atomic.Int64
-	waitMaxMs     atomic.Int64
-	denyGlobal    atomic.Int64
-	denySession   atomic.Int64
-	denyOther     atomic.Int64
+	base         domainPipeline.Throttle
+	interval     time.Duration
+	mu           sync.Mutex
+	next         time.Time
+	acquireCalls atomic.Int64
+	allowedCalls atomic.Int64
+	retryCount   atomic.Int64
+	waitTotalMs  atomic.Int64
+	waitMaxMs    atomic.Int64
+	denyGlobal   atomic.Int64
+	denySession  atomic.Int64
+	denyOther    atomic.Int64
 }
 
 type throttleSnapshot struct {
@@ -548,7 +572,7 @@ func (c *Controller) startPreorder(ctx *fiber.Ctx) error {
 			"VALIDATION_4222",
 			"Requested rps exceeds per-session limit",
 			fiber.Map{
-				"requested_rps":        req.RPS,
+				"requested_rps":         req.RPS,
 				"per_session_rps_limit": c.cfg.PerSessionRPSLimit,
 			},
 		)
@@ -587,6 +611,7 @@ func (c *Controller) startPreorder(ctx *fiber.Ctx) error {
 	pacing := newPacingThrottle(c.rateLimiter, req.RPS)
 	c.coordinator.SetThrottle(pacing, sess.ID)
 	c.coordinator.SetCoreVersion(sess.CoreVersion)
+	c.coordinator.SetErrorInjection(sess.ErrorInjectionEnabled, req.RPS)
 
 	log.Printf("[preorder] starting session=%s run=%s batch=%d max_in_flight=%d",
 		sess.ID, run.ID, batchSize, maxInFlight)
@@ -617,7 +642,9 @@ func (c *Controller) startPreorder(ctx *fiber.Ctx) error {
 			c.notifier.Reset(run.ID)
 			c.flushRun(run.ID)
 			pacing.LogSummary(run.ID, sess.ID, req.RPS)
-			if limiter, ok := c.rateLimiter.(interface{ Stats() session.RateLimiterStats }); ok {
+			if limiter, ok := c.rateLimiter.(interface {
+				Stats() session.RateLimiterStats
+			}); ok {
 				stats := limiter.Stats()
 				log.Printf("[rate_limiter] stats allowed=%d denied_global=%d denied_session=%d denied_other=%d redis_errors=%d",
 					stats.Allowed, stats.DeniedGlobal, stats.DeniedSession, stats.DeniedOther, stats.RedisErrors)
@@ -709,7 +736,7 @@ func (c *Controller) journeyStageForReport(ctx context.Context, runID string, st
 			"max": max,
 		},
 		"errors": fiber.Map{
-			"timeout":           j.Timeout,
+			"timeout":          j.Timeout,
 			"invalid_response": j.Failure,
 		},
 	}
@@ -1040,15 +1067,15 @@ func (c *Controller) finalizeRunLatencies(ctx context.Context, sessionID, runID 
 			}
 
 			ev := &latency.RunLatencyEvent{
-				SessionID:   sessionID,
-				RunID:       runID,
-				Stage:       p.cbStage,
-				TxnID:       txnID,
-				SentAt:      sentAt,
+				SessionID:  sessionID,
+				RunID:      runID,
+				Stage:      p.cbStage,
+				TxnID:      txnID,
+				SentAt:     sentAt,
 				ReceivedAt: nil,
-				LatencyMS:   nil,
-				Outcome:     outcome,
-				RecordedAt:  cutoffAt,
+				LatencyMS:  nil,
+				Outcome:    outcome,
+				RecordedAt: cutoffAt,
 			}
 			missingEvents = append(missingEvents, ev)
 		}
@@ -1069,19 +1096,19 @@ func (c *Controller) finalizeRunLatencies(ctx context.Context, sessionID, runID 
 		avgMs, p90Ms, p95Ms, p99Ms := latency.ComputeSummaryFromSuccessLatenciesMs(successLatenciesMs)
 
 		sum := &latency.RunLatencySummary{
-			SessionID:           sessionID,
-			RunID:               runID,
-			Stage:               p.cbStage,
+			SessionID:          sessionID,
+			RunID:              runID,
+			Stage:              p.cbStage,
 			TimeoutThresholdMS: timeoutThresholdMS,
-			CutoffAt:            cutoffAt,
-			Total:               total,
-			SuccessCount:        successCount,
-			FailureCount:        failureCount,
-			TimeoutCount:        timeoutCount,
-			AvgMS:               avgMs,
-			P90MS:               float64(p90Ms),
-			P95MS:               float64(p95Ms),
-			P99MS:               float64(p99Ms),
+			CutoffAt:           cutoffAt,
+			Total:              total,
+			SuccessCount:       successCount,
+			FailureCount:       failureCount,
+			TimeoutCount:       timeoutCount,
+			AvgMS:              avgMs,
+			P90MS:              float64(p90Ms),
+			P95MS:              float64(p95Ms),
+			P99MS:              float64(p99Ms),
 			ComputedAt:         cutoffAt,
 		}
 

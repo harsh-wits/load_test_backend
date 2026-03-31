@@ -40,6 +40,7 @@ func DispatchConcurrentThrottled(
 	sem := make(chan struct{}, maxInFlight)
 	var wg sync.WaitGroup
 
+outer:
 	for i, p := range payloads {
 		if ctx.Err() != nil {
 			for j := i; j < len(payloads); j++ {
@@ -60,7 +61,7 @@ func DispatchConcurrentThrottled(
 			for j := i; j < len(payloads); j++ {
 				results[j] = DispatchResult{Index: j, Err: ctx.Err()}
 			}
-			break
+			break outer
 		case sem <- struct{}{}:
 		}
 

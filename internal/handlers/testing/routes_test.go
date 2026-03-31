@@ -19,37 +19,59 @@ import (
 
 type noopStore struct{}
 
-func (n *noopStore) CreateSession(_ context.Context, _ *session.Session) error                           { return nil }
-func (n *noopStore) GetSession(_ context.Context, _ string) (*session.Session, error)                    { return nil, nil }
-func (n *noopStore) DeleteSession(_ context.Context, _ string) error                                     { return nil }
-func (n *noopStore) GetSessionByBPP(_ context.Context, _ string) (*session.Session, error)               { return nil, nil }
-func (n *noopStore) SetCatalogState(_ context.Context, _ string, _ *session.CatalogState) error          { return nil }
-func (n *noopStore) GetCatalogState(_ context.Context, _ string) (*session.CatalogState, error)          { return nil, nil }
-func (n *noopStore) SetPreorderState(_ context.Context, _ string, _ *session.PreorderState) error        { return nil }
-func (n *noopStore) GetPreorderState(_ context.Context, _ string) (*session.PreorderState, error)        { return nil, nil }
-func (n *noopStore) CreateRun(_ context.Context, _ *session.Run) error                                   { return nil }
-func (n *noopStore) GetRun(_ context.Context, _ string) (*session.Run, error)                            { return nil, nil }
-func (n *noopStore) UpdateRunStatus(_ context.Context, _, _ string) error                                { return nil }
-func (n *noopStore) IncrMetric(_ context.Context, _, _, _ string, _ int64) error                         { return nil }
-func (n *noopStore) GetMetrics(_ context.Context, _ string) (*session.RunMetrics, error)                 { return nil, nil }
-func (n *noopStore) LinkTxn(_ context.Context, _, _, _ string, _ bool) error                          { return nil }
-func (n *noopStore) GetTxnRoute(_ context.Context, _ string) (string, string, bool, error)            { return "", "", false, nil }
-func (n *noopStore) SetDiscoveryPayload(_ context.Context, _ string, _ []byte) error                     { return nil }
-func (n *noopStore) GetDiscoveryPayload(_ context.Context, _ string) ([]byte, error)                     { return nil, nil }
-func (n *noopStore) SaveSession(_ context.Context, _ *session.Session) error                             { return nil }
-func (n *noopStore) SaveRun(_ context.Context, _ *session.Run) error                                     { return nil }
-func (n *noopStore) SaveCatalog(_ context.Context, _ string, _ []byte) error                             { return nil }
-func (n *noopStore) GetCatalog(_ context.Context, _ string) ([]byte, error)                              { return nil, nil }
-func (n *noopStore) GetRunHistory(_ context.Context, _ string) ([]*session.Run, error)                   { return nil, nil }
-func (n *noopStore) GetRunByID(_ context.Context, _ string) (*session.Run, error)                        { return nil, nil }
+func (n *noopStore) CreateSession(_ context.Context, _ *session.Session) error { return nil }
+func (n *noopStore) GetSession(_ context.Context, _ string) (*session.Session, error) {
+	return nil, nil
+}
+func (n *noopStore) DeleteSession(_ context.Context, _ string) error { return nil }
+func (n *noopStore) GetSessionByBPP(_ context.Context, _ string) (*session.Session, error) {
+	return nil, nil
+}
+func (n *noopStore) SetCatalogState(_ context.Context, _ string, _ *session.CatalogState) error {
+	return nil
+}
+func (n *noopStore) GetCatalogState(_ context.Context, _ string) (*session.CatalogState, error) {
+	return nil, nil
+}
+func (n *noopStore) SetPreorderState(_ context.Context, _ string, _ *session.PreorderState) error {
+	return nil
+}
+func (n *noopStore) GetPreorderState(_ context.Context, _ string) (*session.PreorderState, error) {
+	return nil, nil
+}
+func (n *noopStore) CreateRun(_ context.Context, _ *session.Run) error           { return nil }
+func (n *noopStore) GetRun(_ context.Context, _ string) (*session.Run, error)    { return nil, nil }
+func (n *noopStore) UpdateRunStatus(_ context.Context, _, _ string) error        { return nil }
+func (n *noopStore) IncrMetric(_ context.Context, _, _, _ string, _ int64) error { return nil }
+func (n *noopStore) GetMetrics(_ context.Context, _ string) (*session.RunMetrics, error) {
+	return nil, nil
+}
+func (n *noopStore) LinkTxn(_ context.Context, _, _, _ string, _ bool) error { return nil }
+func (n *noopStore) GetTxnRoute(_ context.Context, _ string) (string, string, bool, error) {
+	return "", "", false, nil
+}
+func (n *noopStore) SetDiscoveryPayload(_ context.Context, _ string, _ []byte) error { return nil }
+func (n *noopStore) GetDiscoveryPayload(_ context.Context, _ string) ([]byte, error) { return nil, nil }
+func (n *noopStore) SaveSession(_ context.Context, _ *session.Session) error         { return nil }
+func (n *noopStore) SaveRun(_ context.Context, _ *session.Run) error                 { return nil }
+func (n *noopStore) SaveCatalog(_ context.Context, _ string, _ []byte) error         { return nil }
+func (n *noopStore) GetCatalog(_ context.Context, _ string) ([]byte, error)          { return nil, nil }
+func (n *noopStore) GetRunHistory(_ context.Context, _ string) ([]*session.Run, error) {
+	return nil, nil
+}
+func (n *noopStore) GetRunByID(_ context.Context, _ string) (*session.Run, error) { return nil, nil }
 func (n *noopStore) GetSessionsByBPP(_ context.Context, _ string, _, _ int) ([]*session.Session, int64, error) {
 	return nil, 0, nil
 }
-func (n *noopStore) GetSessionByID(_ context.Context, _ string) (*session.Session, error) { return nil, nil }
-func (n *noopStore) ExpireSessionsByBPP(_ context.Context, _ string) error                { return nil }
-func (n *noopStore) HardDeleteSession(_ context.Context, _ string) error                  { return nil }
-func (n *noopStore) HardDeleteSessionsByBPP(_ context.Context, _ string) (int64, error)   { return 0, nil }
-func (n *noopStore) SaveRunPayload(_ context.Context, _ *session.RunPayload) error        { return nil }
+func (n *noopStore) GetSessionByID(_ context.Context, _ string) (*session.Session, error) {
+	return nil, nil
+}
+func (n *noopStore) ExpireSessionsByBPP(_ context.Context, _ string) error { return nil }
+func (n *noopStore) HardDeleteSession(_ context.Context, _ string) error   { return nil }
+func (n *noopStore) HardDeleteSessionsByBPP(_ context.Context, _ string) (int64, error) {
+	return 0, nil
+}
+func (n *noopStore) SaveRunPayload(_ context.Context, _ *session.RunPayload) error { return nil }
 func (n *noopStore) GetRunPayloads(_ context.Context, _ string) ([]*session.RunPayload, error) {
 	return nil, nil
 }
@@ -102,6 +124,111 @@ func TestCreateSessionDefaultsFromConfig(t *testing.T) {
 	}
 	if resp.StatusCode != 201 {
 		t.Fatalf("expected status 201, got %d", resp.StatusCode)
+	}
+	var created session.Session
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !created.ErrorInjectionEnabled {
+		t.Fatalf("expected error_injection_enabled true by default")
+	}
+}
+
+type toggleStore struct {
+	noopStore
+	sess     *session.Session
+	preorder *session.PreorderState
+}
+
+func (s *toggleStore) CreateSession(_ context.Context, in *session.Session) error {
+	if in == nil {
+		return nil
+	}
+	cp := *in
+	s.sess = &cp
+	return nil
+}
+
+func (s *toggleStore) GetSession(_ context.Context, id string) (*session.Session, error) {
+	if s.sess == nil || s.sess.ID != id {
+		return nil, fmt.Errorf("session not found")
+	}
+	cp := *s.sess
+	return &cp, nil
+}
+
+func (s *toggleStore) GetSessionByID(_ context.Context, id string) (*session.Session, error) {
+	return s.GetSession(context.Background(), id)
+}
+
+func (s *toggleStore) GetPreorderState(_ context.Context, _ string) (*session.PreorderState, error) {
+	if s.preorder == nil {
+		return &session.PreorderState{Status: session.PreorderIdle}, nil
+	}
+	cp := *s.preorder
+	return &cp, nil
+}
+
+func TestSetSessionErrorInjectionRejectsWhenRunActive(t *testing.T) {
+	store := &toggleStore{
+		sess: &session.Session{
+			ID:        "s-1",
+			BPPID:     "bpp-1",
+			BPPURI:    "https://bpp.example.com",
+			Status:    session.SessionActive,
+			CreatedAt: time.Now().UTC(),
+			ExpiresAt: time.Now().UTC().Add(time.Hour),
+		},
+		preorder: &session.PreorderState{Status: session.PreorderRunning, ActiveRunID: "r-1"},
+	}
+	mgr := session.NewManager(store, store, int(time.Hour.Seconds()))
+	ctrl := NewController(&config.Config{CoreVersion: "1.2.0", Domain: "ONDC:RET10"}, mgr, nil, nil, nil, nil, nil)
+	app := fiber.New(fiber.Config{ErrorHandler: apierror.ErrorHandler()})
+	ctrl.Register(app)
+
+	req := httptest.NewRequest("PUT", "/sessions/s-1/error_injection", bytes.NewReader([]byte(`{"enabled":true}`)))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != 409 {
+		t.Fatalf("expected status 409, got %d", resp.StatusCode)
+	}
+}
+
+func TestSetSessionErrorInjectionUpdatesSession(t *testing.T) {
+	store := &toggleStore{
+		sess: &session.Session{
+			ID:        "s-1",
+			BPPID:     "bpp-1",
+			BPPURI:    "https://bpp.example.com",
+			Status:    session.SessionActive,
+			CreatedAt: time.Now().UTC(),
+			ExpiresAt: time.Now().UTC().Add(time.Hour),
+		},
+		preorder: &session.PreorderState{Status: session.PreorderIdle},
+	}
+	mgr := session.NewManager(store, store, int(time.Hour.Seconds()))
+	ctrl := NewController(&config.Config{CoreVersion: "1.2.0", Domain: "ONDC:RET10"}, mgr, nil, nil, nil, nil, nil)
+	app := fiber.New(fiber.Config{ErrorHandler: apierror.ErrorHandler()})
+	ctrl.Register(app)
+
+	req := httptest.NewRequest("PUT", "/sessions/s-1/error_injection", bytes.NewReader([]byte(`{"enabled":true}`)))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+	var updated session.Session
+	if err := json.NewDecoder(resp.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !updated.ErrorInjectionEnabled {
+		t.Fatalf("expected error_injection_enabled true")
 	}
 }
 
@@ -275,4 +402,3 @@ func TestGetRunReportByRunIDWithoutSessionID(t *testing.T) {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)
 	}
 }
-

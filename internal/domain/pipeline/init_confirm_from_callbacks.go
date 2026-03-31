@@ -82,9 +82,10 @@ func buildBatchFromCallbacks(
 			ctxMap["ttl"] = "PT30S"
 		}
 
-		if targetAction == "init" {
+		switch targetAction {
+		case "init":
 			enrichInit(full, store, runID, txnID)
-		} else if targetAction == "confirm" {
+		case "confirm":
 			enrichConfirm(full, ctxMap)
 		}
 
