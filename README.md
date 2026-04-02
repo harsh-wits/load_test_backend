@@ -29,7 +29,7 @@ The app will be available on `http://localhost:8080`.
 
 ```bash
 cp .env.example .env
-# uses defaults: REDIS_URL=seller-load-tester-redis:6379, MONGO_URI=mongodb://seller-load-tester-mongo:27017
+# uses defaults: Redis + Mongo with auth (see compose for env var names)
 docker compose -f docker-compose.local.yml up --build
 ```
 

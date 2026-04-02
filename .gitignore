@@ -29,3 +29,5 @@ fixtures/on_search/
 
 
 .cursor
+
+*.rest
