@@ -1,4 +1,7 @@
-FROM golang:1.22-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /app
 
@@ -9,9 +12,9 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /bin/load-tester ./cmd/server
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /bin/load-tester ./cmd/server
 
-FROM gcr.io/distroless/base-debian12
+FROM --platform=$TARGETPLATFORM gcr.io/distroless/base-debian12
 
 WORKDIR /app
 
