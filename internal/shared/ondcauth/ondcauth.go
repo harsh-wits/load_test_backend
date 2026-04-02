@@ -14,6 +14,13 @@ import (
 
 const ttlSeconds = 3600
 
+type AuthHeaderSummary struct {
+	KeyID      string
+	Created    string
+	Expires    string
+	SigPreview string
+}
+
 func CreateAuthorisationHeader(payload, privateKey, subscriberID, uniqueKeyID string) (string, error) {
 	privateKeyBytes, err := base64.StdEncoding.DecodeString(privateKey)
 	if err != nil {
@@ -56,12 +63,48 @@ func CreateAuthorisationHeader(payload, privateKey, subscriberID, uniqueKeyID st
 	return header, nil
 }
 
-func VerifyAuthorisationHeader(authHeader, payload, publicKey string) error {
+func SummarizeAuthorisationHeader(authHeader string) (AuthHeaderSummary, error) {
 	keyID, created, expires, sig, err := parseAuthHeader(authHeader)
+	if err != nil {
+		return AuthHeaderSummary{}, err
+	}
+	return AuthHeaderSummary{
+		KeyID:      keyID,
+		Created:    created,
+		Expires:    expires,
+		SigPreview: truncate(sig, 16),
+	}, nil
+}
+
+func VerifyAuthorisationHeader(authHeader, payload, publicKey string) error {
+	keyID, created, expires, _, err := parseAuthHeader(authHeader)
 	if err != nil {
 		return fmt.Errorf("parse auth header: %w", err)
 	}
 	log.Printf("[ondcauth] verifying keyId=%s created=%s expires=%s", keyID, created, expires)
+
+	pubKeyBytes, err := base64.StdEncoding.DecodeString(publicKey)
+	if err != nil {
+		return fmt.Errorf("decode public key: %w", err)
+	}
+	if err := VerifyAuthorisationHeaderBytes(authHeader, payload, pubKeyBytes); err != nil {
+		log.Printf("[ondcauth] verification FAILED keyId=%s", keyID)
+		return err
+	}
+
+	log.Printf("[ondcauth] verification PASSED keyId=%s", keyID)
+	return nil
+}
+
+func VerifyAuthorisationHeaderBytes(authHeader, payload string, pubKeyBytes []byte) error {
+	if len(pubKeyBytes) != ed25519.PublicKeySize {
+		return fmt.Errorf("invalid public key length %d (expected %d)", len(pubKeyBytes), ed25519.PublicKeySize)
+	}
+
+	_, created, expires, sig, err := parseAuthHeader(authHeader)
+	if err != nil {
+		return fmt.Errorf("parse auth header: %w", err)
+	}
 
 	now := time.Now().Unix()
 	createdInt, err := strconv.ParseInt(created, 10, 64)
@@ -73,41 +116,33 @@ func VerifyAuthorisationHeader(authHeader, payload, publicKey string) error {
 		return fmt.Errorf("parse expires timestamp: %w", err)
 	}
 	if createdInt > now {
-		log.Printf("[ondcauth] header not yet valid: created=%d now=%d", createdInt, now)
 		return fmt.Errorf("header not yet valid (created=%d > now=%d)", createdInt, now)
 	}
 	if now > expiresInt {
-		log.Printf("[ondcauth] header expired: expires=%d now=%d", expiresInt, now)
 		return fmt.Errorf("header expired (expires=%d < now=%d)", expiresInt, now)
-	}
-
-	pubKeyBytes, err := base64.StdEncoding.DecodeString(publicKey)
-	if err != nil {
-		return fmt.Errorf("decode public key: %w", err)
-	}
-	if len(pubKeyBytes) != ed25519.PublicKeySize {
-		return fmt.Errorf("invalid public key length %d (expected %d)", len(pubKeyBytes), ed25519.PublicKeySize)
 	}
 
 	hash := blake2b.Sum512([]byte(payload))
 	digest := base64.StdEncoding.EncodeToString(hash[:])
-
 	signingString := fmt.Sprintf("(created): %s\n(expires): %s\ndigest: BLAKE-512=%s",
 		created, expires, digest)
-	log.Printf("[ondcauth] verify signing_string:\n%s", signingString)
 
 	sigBytes, err := base64.StdEncoding.DecodeString(sig)
 	if err != nil {
 		return fmt.Errorf("decode signature: %w", err)
 	}
-
 	if !ed25519.Verify(pubKeyBytes, []byte(signingString), sigBytes) {
-		log.Printf("[ondcauth] verification FAILED keyId=%s", keyID)
 		return fmt.Errorf("signature verification failed")
 	}
-
-	log.Printf("[ondcauth] verification PASSED keyId=%s", keyID)
 	return nil
+}
+
+func ParseKeyID(keyID string) (subscriberID, uniqueKeyID string, ok bool) {
+	parts := strings.Split(keyID, "|")
+	if len(parts) < 2 {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 func parseAuthHeader(header string) (keyID, created, expires, signature string, err error) {

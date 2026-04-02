@@ -3,6 +3,7 @@ package seller
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -66,7 +67,8 @@ func (c *HTTPClient) postWithBody(ctx context.Context, baseURL, action string, p
 	if len(payload) < max {
 		max = len(payload)
 	}
-	log.Printf("[seller_client] outbound %s payload url=%s body=%s", action, url, string(payload[:max]))
+	txnID := extractTxnID(payload)
+	log.Printf("[seller_client] outbound %s txn_id=%s url=%s body=%s", action, txnID, url, string(payload[:max]))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
@@ -74,6 +76,8 @@ func (c *HTTPClient) postWithBody(ctx context.Context, baseURL, action string, p
 	}
 	req.Header.Set("Content-Type", "application/json")
 	c.signRequest(req, action, payload)
+
+	logOutboundHeaders(action, txnID, req.Header)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -113,4 +117,34 @@ func (c *HTTPClient) signRequest(req *http.Request, action string, payload []byt
 func (c *HTTPClient) post(ctx context.Context, baseURL, action string, payload []byte) error {
 	_, err := c.postWithBody(ctx, baseURL, action, payload)
 	return err
+}
+
+func logOutboundHeaders(action, txnID string, h http.Header) {
+	auth := h.Get("Authorization")
+	if auth == "" {
+		log.Printf("[seller_client] outbound_headers action=%s txn_id=%s content_type=%q authorization_present=%t",
+			action, txnID, h.Get("Content-Type"), false)
+		return
+	}
+	s, err := ondcauth.SummarizeAuthorisationHeader(auth)
+	if err != nil {
+		log.Printf("[seller_client] outbound_headers action=%s txn_id=%s content_type=%q authorization_present=%t auth_parse_error=%v",
+			action, txnID, h.Get("Content-Type"), true, err)
+		return
+	}
+	log.Printf("[seller_client] outbound_headers action=%s txn_id=%s content_type=%q key_id=%q created=%q expires=%q sig=%s...",
+		action, txnID, h.Get("Content-Type"), s.KeyID, s.Created, s.Expires, s.SigPreview)
+}
+
+func extractTxnID(payload []byte) string {
+	var env struct {
+		Context map[string]any `json:"context"`
+	}
+	if json.Unmarshal(payload, &env) != nil || env.Context == nil {
+		return ""
+	}
+	if v, ok := env.Context["transaction_id"]; ok && v != nil {
+		return fmt.Sprint(v)
+	}
+	return ""
 }

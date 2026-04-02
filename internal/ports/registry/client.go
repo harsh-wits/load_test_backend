@@ -16,6 +16,7 @@ type Record struct {
 
 type Client interface {
 	GetPublicKey(ctx context.Context, subscriberID string) (ed25519.PublicKey, error)
+	GetPublicKeyByUKID(ctx context.Context, subscriberID, ukID string) (ed25519.PublicKey, error)
 }
 
 type mockClient struct {
@@ -41,5 +42,10 @@ func (c *mockClient) GetPublicKey(ctx context.Context, subscriberID string) (ed2
 		return nil, nil
 	}
 	return c.record.PubKey, nil
+}
+
+func (c *mockClient) GetPublicKeyByUKID(ctx context.Context, subscriberID, ukID string) (ed25519.PublicKey, error) {
+	_ = ukID
+	return c.GetPublicKey(ctx, subscriberID)
 }
 

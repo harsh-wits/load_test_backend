@@ -6,17 +6,23 @@ import (
 	"os"
 	"strconv"
 	"sync/atomic"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 
 	"seller_app_load_tester/internal/domain/latency"
 	domainPipeline "seller_app_load_tester/internal/domain/pipeline"
 	"seller_app_load_tester/internal/domain/session"
+	"seller_app_load_tester/internal/ports/registry"
 	"seller_app_load_tester/internal/shared/runlog"
 )
 
 type VerificationConfig struct {
-	PublicKey string
+	RegistryBaseURL         string
+	RegistryCacheTTLSeconds int
+	SigningPrivateKey       string
+	SigningSubscriberID     string
+	SigningUniqueKeyID      string
 }
 
 type Controller struct {
@@ -25,6 +31,7 @@ type Controller struct {
 	notifier     *domainPipeline.CallbackNotifier
 	validator    domainPipeline.CallbackValidator
 	verification VerificationConfig
+	registry     registry.Client
 	latencyQueue chan *latency.RunLatencyEvent
 	queueDropped atomic.Int64
 	queueSyncFallback atomic.Int64
@@ -38,12 +45,20 @@ func NewController(
 	validator domainPipeline.CallbackValidator,
 	verification VerificationConfig,
 ) *Controller {
+	reg := registry.NewHTTPClient(
+		verification.RegistryBaseURL,
+		verification.SigningPrivateKey,
+		verification.SigningSubscriberID,
+		verification.SigningUniqueKeyID,
+		time.Duration(verification.RegistryCacheTTLSeconds)*time.Second,
+	)
 	c := &Controller{
 		store:        store,
 		sessions:     sessions,
 		notifier:     notifier,
 		validator:    validator,
 		verification: verification,
+		registry:     reg,
 		latencyQueue: make(chan *latency.RunLatencyEvent, readLatencyQueueSize()),
 	}
 	c.startLatencyWorkers(readLatencyWorkerCount())

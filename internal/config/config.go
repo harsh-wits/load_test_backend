@@ -51,6 +51,9 @@ type Config struct {
 	PerSessionRPSLimit int
 	SessionTTLSeconds       int
 	DiscoveryWaitTTLSeconds int
+
+	RegistryBaseURL         string
+	RegistryCacheTTLSeconds int
 }
 
 func Load() (*Config, error) {
@@ -98,6 +101,9 @@ func Load() (*Config, error) {
 		PerSessionRPSLimit:      getEnvInt("PER_SESSION_RPS_LIMIT", 150),
 		SessionTTLSeconds:       getEnvInt("SESSION_TTL_SECONDS", 3600),
 		DiscoveryWaitTTLSeconds: getEnvInt("DISCOVERY_WAIT_TTL_SECONDS", 30),
+
+		RegistryBaseURL:         getEnv("REGISTRY_BASE_URL", ""),
+		RegistryCacheTTLSeconds: getEnvInt("REGISTRY_CACHE_TTL_SECONDS", 600),
 	}
 
 	if err := os.MkdirAll(cfg.RunsFSRoot, 0o755); err != nil {

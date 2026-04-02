@@ -20,6 +20,8 @@ func (c *Controller) verifyInbound(action string, ctx *fiber.Ctx) error {
 	authHeader := ctx.Get("Authorization")
 	hasHeader := authHeader != ""
 
+	logInboundHeaders(action, ctx, authHeader)
+
 	if !hasHeader {
 		return nil
 	}
@@ -41,12 +43,46 @@ func (c *Controller) verifyInbound(action string, ctx *fiber.Ctx) error {
 
 	log.Printf("[callbacks] verifying %s txn_id=%s", action, txnID)
 
-	err = ondcauth.VerifyAuthorisationHeader(authHeader, string(body), c.verification.PublicKey)
+	summary, err := ondcauth.SummarizeAuthorisationHeader(authHeader)
+	if err != nil {
+		log.Printf("[callbacks] %s verification FAILED txn_id=%s error=%v", action, txnID, err)
+		return err
+	}
+	subID, ukID, ok := ondcauth.ParseKeyID(summary.KeyID)
+	if !ok {
+		err := fmt.Errorf("invalid keyId format %q", summary.KeyID)
+		log.Printf("[callbacks] %s verification FAILED txn_id=%s error=%v", action, txnID, err)
+		return err
+	}
+	pubKey, err := c.registry.GetPublicKeyByUKID(context.Background(), subID, ukID)
+	if err != nil {
+		log.Printf("[callbacks] %s verification FAILED txn_id=%s error=%v", action, txnID, err)
+		return err
+	}
+	err = ondcauth.VerifyAuthorisationHeaderBytes(authHeader, string(body), pubKey)
 	if err != nil {
 		log.Printf("[callbacks] %s verification FAILED txn_id=%s error=%v", action, txnID, err)
 		return err
 	}
 	return nil
+}
+
+func logInboundHeaders(action string, ctx *fiber.Ctx, authHeader string) {
+	h := ctx.GetReqHeaders()
+	contentType := h["Content-Type"]
+	if authHeader == "" {
+		log.Printf("[callbacks] inbound_headers action=%s content_type=%q authorization_present=%t",
+			action, contentType, false)
+		return
+	}
+	s, err := ondcauth.SummarizeAuthorisationHeader(authHeader)
+	if err != nil {
+		log.Printf("[callbacks] inbound_headers action=%s content_type=%q authorization_present=%t auth_parse_error=%v",
+			action, contentType, true, err)
+		return
+	}
+	log.Printf("[callbacks] inbound_headers action=%s content_type=%q key_id=%q created=%q expires=%q sig=%s...",
+		action, contentType, s.KeyID, s.Created, s.Expires, s.SigPreview)
 }
 
 func (c *Controller) validatePayload(action string, ctx *fiber.Ctx) error {

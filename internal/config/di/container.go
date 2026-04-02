@@ -112,7 +112,11 @@ func (c *Container) RegisterRoutes(app *fiber.App) error {
 		c.store, c.sessions, notifier,
 		domainPipeline.NoopValidator{},
 		callbackHandlers.VerificationConfig{
-			PublicKey: c.cfg.BAPPublicKey,
+			RegistryBaseURL:         c.cfg.RegistryBaseURL,
+			RegistryCacheTTLSeconds: c.cfg.RegistryCacheTTLSeconds,
+			SigningPrivateKey:       c.cfg.BAPPrivateKey,
+			SigningSubscriberID:     c.cfg.BAPID,
+			SigningUniqueKeyID:      c.cfg.BAPUniqueKeyID,
 		},
 	).Register(app)
 
