@@ -38,6 +38,7 @@ type PersistStore interface {
 	SaveCatalog(ctx context.Context, sessionID string, payload []byte) error
 	GetCatalog(ctx context.Context, sessionID string) ([]byte, error)
 	GetRunHistory(ctx context.Context, sessionID string) ([]*Run, error)
+	SearchLatestRuns(ctx context.Context, bppID, sessionID string, limit int) ([]*Run, error)
 	GetRunByID(ctx context.Context, runID string) (*Run, error)
 	GetSessionsByBPP(ctx context.Context, bppID string, page, pageSize int) ([]*Session, int64, error)
 	GetSessionByID(ctx context.Context, id string) (*Session, error)

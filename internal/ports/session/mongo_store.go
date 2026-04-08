@@ -17,20 +17,20 @@ import (
 )
 
 type MongoStore struct {
-	sessions *mongodriver.Collection
-	runs     *mongodriver.Collection
-	catalogs *mongodriver.Collection
-	payloads *mongodriver.Collection
-	latencyEvents     *mongodriver.Collection
-	latencySummaries  *mongodriver.Collection
+	sessions         *mongodriver.Collection
+	runs             *mongodriver.Collection
+	catalogs         *mongodriver.Collection
+	payloads         *mongodriver.Collection
+	latencyEvents    *mongodriver.Collection
+	latencySummaries *mongodriver.Collection
 }
 
 func NewMongoStore(client *mongo.Client) *MongoStore {
 	s := &MongoStore{
-		sessions: client.Collection("sessions"),
-		runs:     client.Collection("runs"),
-		catalogs: client.Collection("catalogs"),
-		payloads: client.Collection("run_payloads"),
+		sessions:         client.Collection("sessions"),
+		runs:             client.Collection("runs"),
+		catalogs:         client.Collection("catalogs"),
+		payloads:         client.Collection("run_payloads"),
 		latencyEvents:    client.Collection("run_latency_events"),
 		latencySummaries: client.Collection("run_latency_summary"),
 	}
@@ -44,7 +44,7 @@ func (s *MongoStore) ensureLatencyIndexes() {
 	defer cancel()
 
 	_, err := s.latencyEvents.Indexes().CreateOne(ctx, mongodriver.IndexModel{
-		Keys: bson.M{"run_id": 1, "stage": 1, "txn_id": 1},
+		Keys:    bson.M{"run_id": 1, "stage": 1, "txn_id": 1},
 		Options: options.Index().SetUnique(true),
 	})
 	if err != nil {
@@ -52,7 +52,7 @@ func (s *MongoStore) ensureLatencyIndexes() {
 	}
 
 	_, err = s.latencySummaries.Indexes().CreateOne(ctx, mongodriver.IndexModel{
-		Keys: bson.M{"run_id": 1, "stage": 1},
+		Keys:    bson.M{"run_id": 1, "stage": 1},
 		Options: options.Index().SetUnique(true),
 	})
 	if err != nil {
@@ -101,6 +101,28 @@ func (s *MongoStore) GetRunHistory(ctx context.Context, sessionID string) ([]*do
 		return nil, err
 	}
 	defer cursor.Close(ctx)
+	var runs []*domainSession.Run
+	if err := cursor.All(ctx, &runs); err != nil {
+		return nil, err
+	}
+	return runs, nil
+}
+
+func (s *MongoStore) SearchLatestRuns(ctx context.Context, bppID, sessionID string, limit int) ([]*domainSession.Run, error) {
+	filter := bson.M{"bpp_id": bppID}
+	if sessionID != "" {
+		filter["session_id"] = sessionID
+	}
+
+	opts := options.Find().
+		SetSort(bson.M{"started_at": -1}).
+		SetLimit(int64(limit))
+	cursor, err := s.runs.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
 	var runs []*domainSession.Run
 	if err := cursor.All(ctx, &runs); err != nil {
 		return nil, err
@@ -193,10 +215,10 @@ func (s *MongoStore) UpsertRunLatencyEvent(ctx context.Context, e *latency.RunLa
 		"stage":         e.Stage,
 		"txn_id":        e.TxnID,
 		"sent_at":       e.SentAt,
-		"received_at":  e.ReceivedAt,
-		"latency_ms":   e.LatencyMS,
-		"outcome":      e.Outcome,
-		"recorded_at":  e.RecordedAt,
+		"received_at":   e.ReceivedAt,
+		"latency_ms":    e.LatencyMS,
+		"outcome":       e.Outcome,
+		"recorded_at":   e.RecordedAt,
 		"timeout_cause": e.TimeoutCause,
 	}
 
@@ -265,16 +287,16 @@ func (s *MongoStore) UpsertRunLatencySummary(ctx context.Context, sum *latency.R
 		"run_id":               sum.RunID,
 		"stage":                sum.Stage,
 		"timeout_threshold_ms": sum.TimeoutThresholdMS,
-		"cutoff_at":           sum.CutoffAt,
+		"cutoff_at":            sum.CutoffAt,
 		"total":                sum.Total,
-		"success_count":       sum.SuccessCount,
-		"failure_count":       sum.FailureCount,
-		"timeout_count":       sum.TimeoutCount,
+		"success_count":        sum.SuccessCount,
+		"failure_count":        sum.FailureCount,
+		"timeout_count":        sum.TimeoutCount,
 		"avg_ms":               sum.AvgMS,
 		"p90_ms":               sum.P90MS,
 		"p95_ms":               sum.P95MS,
 		"p99_ms":               sum.P99MS,
-		"computed_at":         sum.ComputedAt,
+		"computed_at":          sum.ComputedAt,
 	}
 
 	opts := options.Update().SetUpsert(true)
@@ -374,7 +396,9 @@ func (s *MongoStore) HardDeleteSessionsByBPP(ctx context.Context, bppID string) 
 
 	var ids []string
 	for cursor.Next(ctx) {
-		var doc struct{ ID string `bson:"_id"` }
+		var doc struct {
+			ID string `bson:"_id"`
+		}
 		if err := cursor.Decode(&doc); err == nil {
 			ids = append(ids, doc.ID)
 		}

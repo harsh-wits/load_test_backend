@@ -369,5 +369,15 @@ func (m *Manager) GetRunHistory(ctx context.Context, sessionID string) ([]*Run, 
 	return m.persist.GetRunHistory(ctx, sessionID)
 }
 
+func (m *Manager) SearchLatestRuns(ctx context.Context, bppID, sessionID string, limit int) ([]*Run, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	return m.persist.SearchLatestRuns(ctx, bppID, sessionID, limit)
+}
+
 func (m *Manager) State() StateStore     { return m.state }
 func (m *Manager) Persist() PersistStore { return m.persist }

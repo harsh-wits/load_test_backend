@@ -44,6 +44,24 @@ This starts Redis and Mongo alongside the app for a fully self-contained local e
 5. **Stop a run** -- `POST /sessions/:id/runs/:run_id/stop` to abort mid-flight.
 6. **Clean up** -- `DELETE /sessions/:id` when done.
 
+### Export runs to Excel
+
+Use the exporter to pull run metrics from:
+`GET /sessions/:id/runs/:run_id`
+and generate a stakeholder-ready `.xlsx`.
+
+1. Update `run_export_input.json` with `base_url`, `session_id`, scenario metadata, and run IDs.
+2. Run:
+
+```bash
+go run ./cmd/export_run_metrics -input run_export_input.json -output stakeholder_run_report.xlsx
+```
+
+The workbook contains:
+- `Executive Summary`: one row per run with clean KPI view (success %, p95/p99, scenario toggles).
+- `Stage Trends`: compact trend table by scenario, RPS, and stage.
+- `Expected vs Observed`: highlights error-injection behavior mismatches stage-wise.
+
 ### API endpoints
 
 #### Sessions

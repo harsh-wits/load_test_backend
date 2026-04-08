@@ -59,6 +59,9 @@ func (n *noopStore) GetCatalog(_ context.Context, _ string) ([]byte, error)     
 func (n *noopStore) GetRunHistory(_ context.Context, _ string) ([]*session.Run, error) {
 	return nil, nil
 }
+func (n *noopStore) SearchLatestRuns(_ context.Context, _, _ string, _ int) ([]*session.Run, error) {
+	return nil, nil
+}
 func (n *noopStore) GetRunByID(_ context.Context, _ string) (*session.Run, error) { return nil, nil }
 func (n *noopStore) GetSessionsByBPP(_ context.Context, _ string, _, _ int) ([]*session.Session, int64, error) {
 	return nil, 0, nil
@@ -240,6 +243,28 @@ type reportStore struct {
 	sums    map[latency.Stage]*latency.RunLatencySummary
 }
 
+type runSearchStore struct {
+	noopStore
+	runs []*session.Run
+}
+
+func (s *runSearchStore) SearchLatestRuns(_ context.Context, bppID, sessionID string, limit int) ([]*session.Run, error) {
+	out := make([]*session.Run, 0, len(s.runs))
+	for _, run := range s.runs {
+		if run == nil || run.BPPID != bppID {
+			continue
+		}
+		if sessionID != "" && run.SessionID != sessionID {
+			continue
+		}
+		out = append(out, run)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 func (r *reportStore) GetSession(_ context.Context, id string) (*session.Session, error) {
 	if r.session == nil || r.session.ID != id {
 		return nil, fmt.Errorf("session not found")
@@ -400,5 +425,50 @@ func TestGetRunReportByRunIDWithoutSessionID(t *testing.T) {
 	}
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestSearchLatestRunsByBAPIDAndSessionID(t *testing.T) {
+	store := &runSearchStore{
+		runs: []*session.Run{
+			{ID: "run-1", SessionID: "s-1", BPPID: "bap-1", RPS: 25},
+			{ID: "run-2", SessionID: "s-2", BPPID: "bap-1", RPS: 10},
+			{ID: "run-3", SessionID: "s-1", BPPID: "bap-2", RPS: 99},
+		},
+	}
+	mgr := session.NewManager(store, store, int(time.Hour.Seconds()))
+	ctrl := NewController(&config.Config{CoreVersion: "1.2.0", Domain: "ONDC:RET10"}, mgr, nil, nil, nil, nil, nil)
+	app := fiber.New(fiber.Config{ErrorHandler: apierror.ErrorHandler()})
+	ctrl.Register(app)
+
+	req := httptest.NewRequest("GET", "/runs/search?bap_id=bap-1&session_id=s-1", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	runs, ok := body["runs"].([]any)
+	if !ok {
+		t.Fatalf("expected runs array")
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(runs))
+	}
+	row, ok := runs[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected run object")
+	}
+	if row["run_id"] != "run-1" {
+		t.Fatalf("expected run_id run-1, got %v", row["run_id"])
+	}
+	if row["rps_count"] != float64(25) {
+		t.Fatalf("expected rps_count 25, got %v", row["rps_count"])
 	}
 }

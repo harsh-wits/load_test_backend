@@ -56,6 +56,7 @@ func NewController(
 
 func (c *Controller) Register(app *fiber.App) {
 	app.Get("/runs/:run_id/report", c.getRunReportByID)
+	app.Get("/runs/search", c.searchLatestRuns)
 
 	s := app.Group("/sessions")
 	s.Get("/", c.listSessions)
@@ -74,6 +75,48 @@ func (c *Controller) Register(app *fiber.App) {
 	s.Get("/:id/runs/:run_id/report", c.getRunReport)
 	s.Post("/:id/runs/:run_id/stop", c.stopRun)
 	s.Get("/:id/report", c.sessionReport)
+}
+
+func (c *Controller) searchLatestRuns(ctx *fiber.Ctx) error {
+	bapID := strings.TrimSpace(ctx.Query("bap_id"))
+	if bapID == "" {
+		bapID = strings.TrimSpace(ctx.Query("bpp_id"))
+	}
+	if bapID == "" {
+		return apierror.NewCustomError(400, "REQUIRED_FIELDS_4001", "bap_id query parameter is required")
+	}
+
+	sessionID := strings.TrimSpace(ctx.Query("session_id"))
+	limit := ctx.QueryInt("limit", 20)
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+
+	runs, err := c.sessions.SearchLatestRuns(ctx.Context(), bapID, sessionID, limit)
+	if err != nil {
+		return err
+	}
+	if runs == nil {
+		runs = []*session.Run{}
+	}
+
+	items := make([]fiber.Map, 0, len(runs))
+	for _, run := range runs {
+		if run == nil {
+			continue
+		}
+		items = append(items, fiber.Map{
+			"run_id":     run.ID,
+			"session_id": run.SessionID,
+			"rps_count":  run.RPS,
+		})
+	}
+
+	return ctx.JSON(fiber.Map{
+		"bap_id":     bapID,
+		"session_id": sessionID,
+		"runs":       items,
+	})
 }
 
 // --- Session CRUD ---
