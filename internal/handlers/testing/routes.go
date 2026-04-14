@@ -7,6 +7,7 @@ import (
 	"log"
 	"math"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,6 +57,7 @@ func NewController(
 
 func (c *Controller) Register(app *fiber.App) {
 	app.Get("/runs/:run_id/report", c.getRunReportByID)
+	app.Get("/runs/:run_id/payloads", c.getRunPayloadsByID)
 	app.Get("/runs/search", c.searchLatestRuns)
 
 	s := app.Group("/sessions")
@@ -73,6 +75,7 @@ func (c *Controller) Register(app *fiber.App) {
 	s.Get("/:id/runs", c.listRuns)
 	s.Get("/:id/runs/:run_id", c.getRun)
 	s.Get("/:id/runs/:run_id/report", c.getRunReport)
+	s.Get("/:id/runs/:run_id/payloads", c.getRunPayloads)
 	s.Post("/:id/runs/:run_id/stop", c.stopRun)
 	s.Get("/:id/report", c.sessionReport)
 }
@@ -815,6 +818,123 @@ func (c *Controller) getRunReportByID(ctx *fiber.Ctx) error {
 		return err
 	}
 	return c.writeRunReport(ctx, sess, run)
+}
+
+type runPayloadPageItem struct {
+	TxnID     string    `json:"txn_id"`
+	Timestamp time.Time `json:"timestamp"`
+	Payload   any       `json:"payload"`
+}
+
+func (c *Controller) getRunPayloads(ctx *fiber.Ctx) error {
+	sessionID := ctx.Params("id")
+	runID := ctx.Params("run_id")
+
+	if _, err := c.sessions.GetAny(ctx.Context(), sessionID); err != nil {
+		return err
+	}
+	run, err := c.sessions.GetRun(ctx.Context(), runID)
+	if err != nil || run == nil || run.SessionID != sessionID {
+		return apierror.ErrRunNotFound
+	}
+	return c.writeRunPayloadPage(ctx, runID)
+}
+
+func (c *Controller) getRunPayloadsByID(ctx *fiber.Ctx) error {
+	runID := ctx.Params("run_id")
+	run, err := c.sessions.GetRun(ctx.Context(), runID)
+	if err != nil || run == nil {
+		return apierror.ErrRunNotFound
+	}
+	return c.writeRunPayloadPage(ctx, runID)
+}
+
+func (c *Controller) writeRunPayloadPage(ctx *fiber.Ctx, runID string) error {
+	if c.store == nil {
+		return apierror.NewCustomError(500, "PIPELINE_5003", "run payload store is not configured")
+	}
+
+	stage := strings.TrimSpace(ctx.Query("stage"))
+	switch stage {
+	case "select", "init", "confirm":
+	default:
+		return apierror.NewCustomError(400, "REQUIRED_FIELDS_4001", "stage query parameter is required and must be one of: select, init, confirm")
+	}
+
+	payloadNumber := ctx.QueryInt("payload_number", 1)
+	if payloadNumber < 1 {
+		payloadNumber = 1
+	}
+
+	txnIDs, err := c.store.ListTxnIDs(runID, "pipeline_b", stage)
+	if err != nil {
+		return apierror.NewCustomError(500, "PIPELINE_5003", "failed to read run payload transaction ids")
+	}
+
+	type txnAt struct {
+		ID string
+		At time.Time
+	}
+	ordered := make([]txnAt, 0, len(txnIDs))
+	for _, txnID := range txnIDs {
+		if txnID == "" {
+			continue
+		}
+		at, tsErr := c.store.GetTimestamp(runID, "pipeline_b", stage, txnID)
+		if tsErr != nil {
+			continue
+		}
+		ordered = append(ordered, txnAt{ID: txnID, At: at})
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].At.Before(ordered[j].At) })
+
+	total := len(ordered)
+	if total == 0 {
+		return ctx.JSON(fiber.Map{
+			"run_id":               runID,
+			"pipeline":             "pipeline_b",
+			"stage":                stage,
+			"payload_number":       payloadNumber,
+			"available_payloads":   0,
+			"payload_found":        false,
+			"payload":              nil,
+			"available_range_hint": "no payloads recorded for this stage",
+		})
+	}
+	if payloadNumber > total {
+		return apierror.NewCustomError(404, "PAYLOAD_NOT_FOUND", "payload_number is out of range for this stage", fiber.Map{
+			"available_payloads": total,
+		})
+	}
+
+	selected := ordered[payloadNumber-1]
+
+	payloadsByTxn, err := c.store.GetMulti(runID, "pipeline_b", stage, []string{selected.ID})
+	if err != nil {
+		return apierror.NewCustomError(500, "PIPELINE_5003", "failed to read run payloads")
+	}
+	payload := payloadsByTxn[selected.ID]
+	if len(payload) == 0 {
+		return apierror.NewCustomError(404, "PAYLOAD_NOT_FOUND", "payload not found for the requested payload_number")
+	}
+	var parsed any
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		parsed = string(payload)
+	}
+
+	return ctx.JSON(fiber.Map{
+		"run_id":             runID,
+		"pipeline":           "pipeline_b",
+		"stage":              stage,
+		"payload_number":     payloadNumber,
+		"available_payloads": total,
+		"payload_found":      true,
+		"payload": runPayloadPageItem{
+			TxnID:     selected.ID,
+			Timestamp: selected.At,
+			Payload:   parsed,
+		},
+	})
 }
 
 func (c *Controller) writeRunReport(ctx *fiber.Ctx, sess *session.Session, run *session.Run) error {

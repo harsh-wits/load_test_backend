@@ -134,17 +134,30 @@ func normalizeSelectPayload(payload []byte) ([]byte, error) {
 	if order == nil {
 		return json.Marshal(m)
 	}
+	fulfillmentIDs := make([]string, 0)
 	if fulfillments, ok := order["fulfillments"].([]any); ok {
 		for _, f := range fulfillments {
-			if fm, _ := f.(map[string]any); fm != nil && fm["type"] == nil {
-				fm["type"] = "Delivery"
+			if fm, _ := f.(map[string]any); fm != nil {
+				if fm["type"] == nil {
+					fm["type"] = "Delivery"
+				}
+				if state, _ := fm["state"].(map[string]any); state == nil {
+					fm["state"] = map[string]any{
+						"descriptor": map[string]any{
+							"code": "Serviceable",
+						},
+					}
+				}
+				if id, _ := fm["id"].(string); id != "" {
+					fulfillmentIDs = append(fulfillmentIDs, id)
+				}
 			}
 		}
 	}
 	if items, ok := order["items"].([]any); ok {
 		for _, it := range items {
-			if im, _ := it.(map[string]any); im != nil && im["fulfillment_id"] == nil {
-				im["fulfillment_id"] = "F1"
+			if im, _ := it.(map[string]any); im != nil && im["fulfillment_id"] == nil && len(fulfillmentIDs) > 0 {
+				im["fulfillment_id"] = fulfillmentIDs[0]
 			}
 		}
 	}
@@ -187,7 +200,7 @@ func (s *selectBatchService) generateFromOnSearch(onSearch OnSearchPayload, exam
 	}
 
 	const distinctCount = 12
-	orders, err := buildDistinctOrdersFromOnSearch(onSearch, orderWrapper.Order, distinctCount, onEnv.Context.Domain)
+	orders, err := buildDistinctOrdersFromOnSearch(onSearch, orderWrapper.Order, distinctCount)
 	if err != nil {
 		return nil, err
 	}
@@ -245,15 +258,20 @@ type onSearchCatalog struct {
 	Message struct {
 		Catalog struct {
 			Providers []struct {
-				ID        string `json:"id"`
+				ID           string `json:"id"`
+				Fulfillments []struct {
+					ID   string `json:"id"`
+					Type string `json:"type"`
+				} `json:"fulfillments"`
 				Locations []struct {
 					ID string `json:"id"`
 				} `json:"locations"`
 				Items []struct {
-					ID           string `json:"id"`
-					LocationID   string `json:"location_id"`
-					ParentItemID string `json:"parent_item_id"`
-					Tags         []struct {
+					ID            string `json:"id"`
+					LocationID    string `json:"location_id"`
+					FulfillmentID string `json:"fulfillment_id"`
+					ParentItemID  string `json:"parent_item_id"`
+					Tags          []struct {
 						Code string `json:"code"`
 						List []struct {
 							Code  string `json:"code"`
@@ -290,7 +308,7 @@ func normalizeProviderID(in string) string {
 	return string(buf)
 }
 
-func buildDistinctOrdersFromOnSearch(onSearch []byte, baseOrder map[string]any, distinctCount int, domain string) ([]map[string]any, error) {
+func buildDistinctOrdersFromOnSearch(onSearch []byte, baseOrder map[string]any, distinctCount int) ([]map[string]any, error) {
 	if distinctCount <= 0 {
 		return nil, nil
 	}
@@ -312,10 +330,11 @@ func buildDistinctOrdersFromOnSearch(onSearch []byte, baseOrder map[string]any, 
 
 	// Build a flat list of items belonging to this provider.
 	type flatItem struct {
-		ID           string
-		LocationID   string
-		ParentItemID string
-		Tags         []map[string]any
+		ID            string
+		LocationID    string
+		FulfillmentID string
+		ParentItemID  string
+		Tags          []map[string]any
 	}
 
 	items := make([]flatItem, 0, len(prov.Items))
@@ -323,6 +342,19 @@ func buildDistinctOrdersFromOnSearch(onSearch []byte, baseOrder map[string]any, 
 	// Prefer a provider location ID from the catalog to satisfy
 	// ITEMS_LOCATION_MAP_SPF (location_id must be in provider.locations[].id).
 	var providerLocationID string
+	fulfillmentTypeByID := make(map[string]string, len(prov.Fulfillments))
+	var defaultFulfillmentID string
+	for _, f := range prov.Fulfillments {
+		if f.ID == "" {
+			continue
+		}
+		if defaultFulfillmentID == "" {
+			defaultFulfillmentID = f.ID
+		}
+		if f.Type != "" {
+			fulfillmentTypeByID[f.ID] = f.Type
+		}
+	}
 	if len(prov.Locations) > 0 {
 		providerLocationID = prov.Locations[0].ID
 	}
@@ -342,10 +374,11 @@ func buildDistinctOrdersFromOnSearch(onSearch []byte, baseOrder map[string]any, 
 			})
 		}
 		items = append(items, flatItem{
-			ID:           it.ID,
-			LocationID:   it.LocationID,
-			ParentItemID: it.ParentItemID,
-			Tags:         tagMaps,
+			ID:            it.ID,
+			LocationID:    it.LocationID,
+			FulfillmentID: it.FulfillmentID,
+			ParentItemID:  it.ParentItemID,
+			Tags:          tagMaps,
 		})
 	}
 	if len(items) == 0 {
@@ -388,6 +421,7 @@ func buildDistinctOrdersFromOnSearch(onSearch []byte, baseOrder map[string]any, 
 		chosen := perm[:n]
 
 		orderItems := make([]any, 0, n)
+		fulfillmentIDs := make(map[string]struct{})
 		var chosenLocationID string
 		for _, idx := range chosen {
 			it := items[idx]
@@ -400,12 +434,20 @@ func buildDistinctOrdersFromOnSearch(onSearch []byte, baseOrder map[string]any, 
 			}
 
 			itemMap := map[string]any{
-				"id":          it.ID,
-				"location_id": itemLocationID,
-				"tags":        it.Tags,
+				"id":             it.ID,
+				"location_id":    itemLocationID,
+				"fulfillment_id": it.FulfillmentID,
+				"tags":           it.Tags,
 				"quantity": map[string]any{
 					"count": 2,
 				},
+			}
+			if it.FulfillmentID == "" && defaultFulfillmentID != "" {
+				itemMap["fulfillment_id"] = defaultFulfillmentID
+				fulfillmentIDs[defaultFulfillmentID] = struct{}{}
+			}
+			if it.FulfillmentID != "" {
+				fulfillmentIDs[it.FulfillmentID] = struct{}{}
 			}
 			if it.ParentItemID != "" {
 				itemMap["parent_item_id"] = it.ParentItemID
@@ -418,20 +460,33 @@ func buildDistinctOrdersFromOnSearch(onSearch []byte, baseOrder map[string]any, 
 
 		// Ensure provider.locations[].id is consistent with item location_ids
 		// to satisfy ITEMS_LOCATION_MAP_SPF.
-		if chosenLocationID != "" {
-			if provMap, _ := order["provider"].(map[string]any); provMap != nil {
+		if provMap, _ := order["provider"].(map[string]any); provMap != nil {
+			provMap["id"] = prov.ID
+			if chosenLocationID != "" {
 				loc := map[string]any{"id": chosenLocationID}
 				provMap["locations"] = []any{loc}
-				order["provider"] = provMap
 			}
+			order["provider"] = provMap
 		}
 
-		// RET14-specific: force a safe provider.id to satisfy ORDER_PROVIDER_ID.
-		if domain == "ONDC:RET14" {
-			if provMap, _ := order["provider"].(map[string]any); provMap != nil {
-				provMap["id"] = "P1"
-				order["provider"] = provMap
+		if len(fulfillmentIDs) > 0 {
+			orderFulfillments := make([]any, 0, len(fulfillmentIDs))
+			for fulfillmentID := range fulfillmentIDs {
+				fulfillmentType := fulfillmentTypeByID[fulfillmentID]
+				if fulfillmentType == "" {
+					fulfillmentType = "Delivery"
+				}
+				orderFulfillments = append(orderFulfillments, map[string]any{
+					"id":   fulfillmentID,
+					"type": fulfillmentType,
+					"state": map[string]any{
+						"descriptor": map[string]any{
+							"code": "Serviceable",
+						},
+					},
+				})
 			}
+			order["fulfillments"] = orderFulfillments
 		}
 
 		out = append(out, order)

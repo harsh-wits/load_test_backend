@@ -15,6 +15,7 @@ import (
 	"seller_app_load_tester/internal/domain/latency"
 	"seller_app_load_tester/internal/domain/session"
 	"seller_app_load_tester/internal/shared/apierror"
+	"seller_app_load_tester/internal/shared/runlog"
 )
 
 type noopStore struct{}
@@ -470,5 +471,140 @@ func TestSearchLatestRunsByBAPIDAndSessionID(t *testing.T) {
 	}
 	if row["rps_count"] != float64(25) {
 		t.Fatalf("expected rps_count 25, got %v", row["rps_count"])
+	}
+}
+
+func TestGetRunPayloadsReturnsRequestedPayloadByNumber(t *testing.T) {
+	sess := &session.Session{
+		ID:        "s-1",
+		BPPID:     "bpp-1",
+		BPPURI:    "https://bpp.example.com",
+		Status:    session.SessionActive,
+		CreatedAt: time.Now().UTC(),
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}
+	run := &session.Run{
+		ID:        "r-1",
+		SessionID: "s-1",
+		BPPID:     "bpp-1",
+		Status:    "completed",
+	}
+	store := &reportStore{session: sess, run: run, metrics: &session.RunMetrics{}, sums: map[latency.Stage]*latency.RunLatencySummary{}}
+	runStore := runlog.NewMemoryStore()
+	_ = runStore.Record("r-1", "pipeline_b", "select", "txn-1", []byte(`{"message":{"order":{"items":[{"id":"item-1"}]}}}`))
+	_ = runStore.RecordTimestamp("r-1", "pipeline_b", "select", "txn-1", time.Date(2026, 4, 14, 10, 0, 0, 0, time.UTC))
+	_ = runStore.Record("r-1", "pipeline_b", "select", "txn-2", []byte(`{"message":{"order":{"items":[{"id":"item-2"}]}}}`))
+	_ = runStore.RecordTimestamp("r-1", "pipeline_b", "select", "txn-2", time.Date(2026, 4, 14, 10, 0, 1, 0, time.UTC))
+
+	mgr := session.NewManager(store, store, int(time.Hour.Seconds()))
+	ctrl := NewController(&config.Config{CoreVersion: "1.2.0", Domain: "ONDC:RET10"}, mgr, nil, nil, nil, runStore, nil)
+	app := fiber.New(fiber.Config{ErrorHandler: apierror.ErrorHandler()})
+	ctrl.Register(app)
+
+	req := httptest.NewRequest("GET", "/sessions/s-1/runs/r-1/payloads?stage=select&payload_number=1", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["available_payloads"] != float64(2) {
+		t.Fatalf("expected available_payloads 2, got %v", body["available_payloads"])
+	}
+	if body["payload_number"] != float64(1) {
+		t.Fatalf("expected payload_number 1, got %v", body["payload_number"])
+	}
+	row, ok := body["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected payload object")
+	}
+	if row["txn_id"] != "txn-1" {
+		t.Fatalf("expected first payload txn-1, got %v", row["txn_id"])
+	}
+}
+
+func TestGetRunPayloadsRejectsInvalidStage(t *testing.T) {
+	sess := &session.Session{
+		ID:        "s-1",
+		BPPID:     "bpp-1",
+		BPPURI:    "https://bpp.example.com",
+		Status:    session.SessionActive,
+		CreatedAt: time.Now().UTC(),
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}
+	run := &session.Run{
+		ID:        "r-1",
+		SessionID: "s-1",
+		BPPID:     "bpp-1",
+		Status:    "completed",
+	}
+	store := &reportStore{session: sess, run: run, metrics: &session.RunMetrics{}, sums: map[latency.Stage]*latency.RunLatencySummary{}}
+	mgr := session.NewManager(store, store, int(time.Hour.Seconds()))
+	ctrl := NewController(&config.Config{CoreVersion: "1.2.0", Domain: "ONDC:RET10"}, mgr, nil, nil, nil, runlog.NewMemoryStore(), nil)
+	app := fiber.New(fiber.Config{ErrorHandler: apierror.ErrorHandler()})
+	ctrl.Register(app)
+
+	req := httptest.NewRequest("GET", "/sessions/s-1/runs/r-1/payloads?stage=on_select", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != 400 {
+		t.Fatalf("expected status 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestGetRunPayloadsDefaultsToFirstPayload(t *testing.T) {
+	sess := &session.Session{
+		ID:        "s-1",
+		BPPID:     "bpp-1",
+		BPPURI:    "https://bpp.example.com",
+		Status:    session.SessionActive,
+		CreatedAt: time.Now().UTC(),
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}
+	run := &session.Run{
+		ID:        "r-1",
+		SessionID: "s-1",
+		BPPID:     "bpp-1",
+		Status:    "completed",
+	}
+	store := &reportStore{session: sess, run: run, metrics: &session.RunMetrics{}, sums: map[latency.Stage]*latency.RunLatencySummary{}}
+	runStore := runlog.NewMemoryStore()
+	_ = runStore.Record("r-1", "pipeline_b", "init", "txn-1", []byte(`{"message":{"order":{"items":[{"id":"item-1"}]}}}`))
+	_ = runStore.RecordTimestamp("r-1", "pipeline_b", "init", "txn-1", time.Date(2026, 4, 14, 10, 0, 0, 0, time.UTC))
+	_ = runStore.Record("r-1", "pipeline_b", "init", "txn-2", []byte(`{"message":{"order":{"items":[{"id":"item-2"}]}}}`))
+	_ = runStore.RecordTimestamp("r-1", "pipeline_b", "init", "txn-2", time.Date(2026, 4, 14, 10, 0, 1, 0, time.UTC))
+
+	mgr := session.NewManager(store, store, int(time.Hour.Seconds()))
+	ctrl := NewController(&config.Config{CoreVersion: "1.2.0", Domain: "ONDC:RET10"}, mgr, nil, nil, nil, runStore, nil)
+	app := fiber.New(fiber.Config{ErrorHandler: apierror.ErrorHandler()})
+	ctrl.Register(app)
+
+	req := httptest.NewRequest("GET", "/sessions/s-1/runs/r-1/payloads?stage=init", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["payload_number"] != float64(1) {
+		t.Fatalf("expected default payload_number 1, got %v", body["payload_number"])
+	}
+	row, _ := body["payload"].(map[string]any)
+	if row["txn_id"] != "txn-1" {
+		t.Fatalf("expected first payload txn-1, got %v", row["txn_id"])
 	}
 }
