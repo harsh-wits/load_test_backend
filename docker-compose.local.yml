@@ -7,8 +7,14 @@ services:
     command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-change-me}"]
 
   mongo:
+    # image: mongo:6.0
     image: mongo:7
     container_name: seller-load-tester-mongo
+    command: ["mongod", "--bind_ip_all"]
+    ulimits:
+      nofile:
+        soft: 64000
+        hard: 64000
     ports:
       - "27018:27017"
     environment:

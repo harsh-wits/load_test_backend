@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"seller_app_load_tester/internal/shared/redis"
@@ -193,10 +194,11 @@ func (s *RedisStore) Export(runID string, fn func(pipeline, action, txnID string
 		return err
 	}
 	for _, key := range keys {
-		var run, pipeline, action string
-		if _, err := fmt.Sscanf(key, "runlog:%s:%s:%s", &run, &pipeline, &action); err != nil || run != runID {
+		parts := strings.SplitN(key, ":", 4)
+		if len(parts) != 4 || parts[0] != "runlog" || parts[1] != runID {
 			continue
 		}
+		pipeline, action := parts[2], parts[3]
 		all, err := s.client.HGetAll(ctx, key)
 		if err != nil || len(all) == 0 {
 			continue
