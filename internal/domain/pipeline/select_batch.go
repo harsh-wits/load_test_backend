@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -156,8 +157,68 @@ func normalizeSelectPayload(payload []byte) ([]byte, error) {
 	}
 	if items, ok := order["items"].([]any); ok {
 		for _, it := range items {
-			if im, _ := it.(map[string]any); im != nil && im["fulfillment_id"] == nil && len(fulfillmentIDs) > 0 {
+			im, _ := it.(map[string]any)
+			if im == nil {
+				continue
+			}
+			if im["fulfillment_id"] == nil && len(fulfillmentIDs) > 0 {
 				im["fulfillment_id"] = fulfillmentIDs[0]
+			}
+			im["tags"] = []any{
+				map[string]any{
+					"code": "type",
+					"list": []any{
+						map[string]any{
+							"code":  "type",
+							"value": "item",
+						},
+					},
+				},
+			}
+		}
+	}
+	if fulfillments, ok := order["fulfillments"].([]any); ok {
+		for _, f := range fulfillments {
+			fm, _ := f.(map[string]any)
+			if fm == nil {
+				continue
+			}
+			if fm["type"] == nil {
+				fm["type"] = "Delivery"
+			}
+			state, _ := fm["state"].(map[string]any)
+			if state == nil {
+				state = map[string]any{}
+				fm["state"] = state
+			}
+			descriptor, _ := state["descriptor"].(map[string]any)
+			if descriptor == nil {
+				descriptor = map[string]any{}
+				state["descriptor"] = descriptor
+			}
+			if descriptor["code"] == nil || fmt.Sprint(descriptor["code"]) == "" {
+				descriptor["code"] = "Serviceable"
+			}
+
+			end, _ := fm["end"].(map[string]any)
+			if end == nil {
+				return nil, errors.New("select fulfillment end missing")
+			}
+			loc, _ := end["location"].(map[string]any)
+			if loc == nil {
+				return nil, errors.New("select fulfillment end.location missing")
+			}
+			gps := fmt.Sprint(loc["gps"])
+			if gps == "" {
+				return nil, errors.New("select fulfillment end.location.gps missing")
+			}
+			addr, _ := loc["address"].(map[string]any)
+			if addr == nil {
+				return nil, errors.New("select fulfillment end.location.address missing")
+			}
+			areaCode := fmt.Sprint(addr["area_code"])
+			if areaCode == "" {
+				return nil, errors.New("select fulfillment end.location.address.area_code missing")
 			}
 		}
 	}
@@ -398,6 +459,13 @@ func buildDistinctOrdersFromOnSearch(onSearch []byte, baseOrder map[string]any, 
 		_ = json.Unmarshal(raw, &out)
 		return out
 	}
+	baseFulfillmentTemplate := map[string]any{}
+	if existing, ok := baseOrder["fulfillments"].([]any); ok && len(existing) > 0 {
+		if fm, _ := existing[0].(map[string]any); fm != nil {
+			raw, _ := json.Marshal(fm)
+			_ = json.Unmarshal(raw, &baseFulfillmentTemplate)
+		}
+	}
 
 	maxItemsPerOrder := 5
 	if len(items) < maxItemsPerOrder {
@@ -437,7 +505,17 @@ func buildDistinctOrdersFromOnSearch(onSearch []byte, baseOrder map[string]any, 
 				"id":             it.ID,
 				"location_id":    itemLocationID,
 				"fulfillment_id": it.FulfillmentID,
-				"tags":           it.Tags,
+				"tags": []any{
+					map[string]any{
+						"code": "type",
+						"list": []any{
+							map[string]any{
+								"code":  "type",
+								"value": "item",
+							},
+						},
+					},
+				},
 				"quantity": map[string]any{
 					"count": 2,
 				},
@@ -476,15 +554,14 @@ func buildDistinctOrdersFromOnSearch(onSearch []byte, baseOrder map[string]any, 
 				if fulfillmentType == "" {
 					fulfillmentType = "Delivery"
 				}
-				orderFulfillments = append(orderFulfillments, map[string]any{
-					"id":   fulfillmentID,
-					"type": fulfillmentType,
-					"state": map[string]any{
-						"descriptor": map[string]any{
-							"code": "Serviceable",
-						},
-					},
-				})
+				fulfillment := map[string]any{}
+				if len(baseFulfillmentTemplate) > 0 {
+					raw, _ := json.Marshal(baseFulfillmentTemplate)
+					_ = json.Unmarshal(raw, &fulfillment)
+				}
+				fulfillment["id"] = fulfillmentID
+				fulfillment["type"] = fulfillmentType
+				orderFulfillments = append(orderFulfillments, fulfillment)
 			}
 			order["fulfillments"] = orderFulfillments
 		}

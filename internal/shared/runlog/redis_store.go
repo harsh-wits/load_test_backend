@@ -194,11 +194,14 @@ func (s *RedisStore) Export(runID string, fn func(pipeline, action, txnID string
 		return err
 	}
 	for _, key := range keys {
-		parts := strings.SplitN(key, ":", 4)
+		parts := strings.Split(key, ":")
 		if len(parts) != 4 || parts[0] != "runlog" || parts[1] != runID {
 			continue
 		}
 		pipeline, action := parts[2], parts[3]
+		if pipeline == "" || action == "" {
+			continue
+		}
 		all, err := s.client.HGetAll(ctx, key)
 		if err != nil || len(all) == 0 {
 			continue
