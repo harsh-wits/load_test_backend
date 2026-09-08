@@ -121,7 +121,7 @@ function renderStages(){
         <div><label>duration (s)</label><input class="dur" data-a="${s.action}" type="number" value="${s.dur}"/></div>
         <div><label>count</label><input class="count" data-a="${s.action}" type="number" value="${s.qps*s.dur}" disabled/></div>
       </div>
-      <div class="row" style="margin-top:10px"><button class="run" data-a="${s.action}">Run ${s.action}</button></div>
+      <div class="row" style="margin-top:10px"><button class="run" data-a="${s.action}">Run ${s.action}</button><button class="sec preview" data-a="${s.action}">Preview payload</button></div>
       <div class="res" id="res-${s.action}"></div>`;
     host.appendChild(el);
   }
@@ -132,6 +132,7 @@ function renderStages(){
     document.querySelector(`.dur[data-a="${a}"]`).disabled=c;
   }));
   host.querySelectorAll(".run").forEach(b=>b.addEventListener("click",e=>startRun(e.target.dataset.a)));
+  host.querySelectorAll(".preview").forEach(b=>b.addEventListener("click",e=>previewRun(e.target.dataset.a)));
   document.getElementById("runAll").addEventListener("click",()=>{
     document.querySelectorAll(".en").forEach(en=>{ if(en.checked) startRun(en.dataset.a); });
   });
@@ -161,6 +162,23 @@ function buildBody(action){
   const os = document.getElementById("onSearch").value.trim();
   if (os){ try { body.on_search = JSON.parse(os); } catch(e){ throw new Error("on_search is not valid JSON"); } }
   return body;
+}
+
+function escapeHtml(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+async function previewRun(action){
+  const res = document.getElementById("res-"+action);
+  res.className="res show";
+  let body;
+  try { body = buildBody(action); } catch(e){ res.innerHTML = `<span class="warn">${e.message}</span>`; return; }
+  res.innerHTML = `<span class="muted">generating…</span>`;
+  try {
+    const r = await fetch("/loadtest/preview",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const j = await r.json();
+    if(!r.ok){ res.innerHTML = `<span class="warn">${j.error?.message||"error"}</span>`; return; }
+    res.innerHTML = `<div class="muted">POST ${j.url} · signed: ${j.would_sign} · delivery gps <b>${j.delivery?.gps||"—"}</b> / area_code <b>${j.delivery?.area_code||"—"}</b></div>
+      <pre style="max-height:340px;overflow:auto;background:#0e1626;border:1px solid var(--line);border-radius:7px;padding:10px;font-size:12px">${escapeHtml(JSON.stringify(j.payload,null,2))}</pre>`;
+  } catch(e){ res.innerHTML = `<span class="warn">${e.message}</span>`; }
 }
 
 async function startRun(action){

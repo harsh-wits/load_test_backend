@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math/rand"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -34,6 +35,7 @@ func NewController(cfg *appconfig.Config) *Controller {
 func (c *Controller) Register(app *fiber.App) {
 	app.Get("/ui", c.dashboard)
 	app.Get("/loadtest/config", c.config)
+	app.Post("/loadtest/preview", c.preview)
 	app.Post("/loadtest", c.start)
 	app.Get("/loadtest/:id", c.status)
 	app.Get("/loadtest/:id/ledger", c.ledger)
@@ -101,40 +103,10 @@ func (c *Controller) start(ctx *fiber.Ctx) error {
 		return fail(ctx, fiber.StatusBadRequest, "NO_SIGNING_KEY", "sign=true but BAP_PRIVATE_KEY is not configured")
 	}
 
-	// Build the catalog (required for select/init/confirm).
-	var cat *lt.Catalog
-	if len(req.OnSearch) > 0 {
-		parsed, err := lt.ParseCatalog(req.OnSearch)
-		if err != nil {
-			if req.Action != lt.ActionSearch {
-				return fail(ctx, fiber.StatusBadRequest, "INVALID_ON_SEARCH", "on_search could not be parsed: "+err.Error())
-			}
-		} else {
-			cat = parsed
-		}
+	gen, aerr := c.buildGenerator(req)
+	if aerr != nil {
+		return fail(ctx, aerr.status, aerr.code, aerr.msg)
 	}
-	if cat == nil {
-		if req.Action != lt.ActionSearch {
-			return fail(ctx, fiber.StatusBadRequest, "MISSING_ON_SEARCH", "on_search catalog is required for select/init/confirm")
-		}
-		cat = &lt.Catalog{}
-	}
-
-	// Context identity: signing keyId must match context.bap_id, so take
-	// bap_id/bap_uri from config; domain/country/city from the catalog if present.
-	d, cc, city, core := c.contextDefaults(req.OnSearch)
-	genCtx := lt.GenContext{
-		Domain: d, Country: cc, City: city, CoreVersion: core,
-		BAPID: c.cfg.BAPID, BAPURI: c.cfg.BAPURI,
-		BPPID: req.BPPID, BPPURI: req.BPPURI,
-	}
-
-	seed := time.Now().UnixNano()
-	if req.Randomize.Seed != nil {
-		seed = *req.Randomize.Seed
-	}
-	rng := rand.New(rand.NewSource(seed))
-	gen := lt.NewGenerator(cat, genCtx, req.Randomize, rng)
 
 	run := &lt.Run{ID: uuid.NewString(), Action: string(req.Action), Planned: planned, Started: time.Now()}
 	runCtx, cancel := context.WithCancel(context.Background())
@@ -190,6 +162,102 @@ func (c *Controller) ledger(ctx *fiber.Ctx) error {
 		return ctx.Send(buf.Bytes())
 	}
 	return ctx.JSON(fiber.Map{"run_id": run.ID, "action": run.Action, "count": len(rows), "ledger": rows})
+}
+
+type apiErr struct {
+	status int
+	code   string
+	msg    string
+}
+
+// buildGenerator parses the catalog and constructs a payload generator, shared
+// by start (live) and preview (dry-run).
+func (c *Controller) buildGenerator(req lt.StartRequest) (*lt.Generator, *apiErr) {
+	var cat *lt.Catalog
+	if len(req.OnSearch) > 0 {
+		parsed, err := lt.ParseCatalog(req.OnSearch)
+		if err != nil {
+			if req.Action != lt.ActionSearch {
+				return nil, &apiErr{fiber.StatusBadRequest, "INVALID_ON_SEARCH", "on_search could not be parsed: " + err.Error()}
+			}
+		} else {
+			cat = parsed
+		}
+	}
+	if cat == nil {
+		if req.Action != lt.ActionSearch {
+			return nil, &apiErr{fiber.StatusBadRequest, "MISSING_ON_SEARCH", "on_search catalog is required for select/init/confirm"}
+		}
+		cat = &lt.Catalog{}
+	}
+	// Context identity: signing keyId must match context.bap_id, so take
+	// bap_id/bap_uri from config; domain/country/city from the catalog if present.
+	d, cc, city, core := c.contextDefaults(req.OnSearch)
+	genCtx := lt.GenContext{
+		Domain: d, Country: cc, City: city, CoreVersion: core,
+		BAPID: c.cfg.BAPID, BAPURI: c.cfg.BAPURI,
+		BPPID: req.BPPID, BPPURI: req.BPPURI,
+	}
+	seed := time.Now().UnixNano()
+	if req.Randomize.Seed != nil {
+		seed = *req.Randomize.Seed
+	}
+	return lt.NewGenerator(cat, genCtx, req.Randomize, rand.New(rand.NewSource(seed))), nil
+}
+
+// preview generates a single payload (without sending) so the operator can
+// inspect exactly what the load run would POST — especially the delivery
+// gps/area_code, which is the usual cause of "not serviceable" NACKs.
+func (c *Controller) preview(ctx *fiber.Ctx) error {
+	var req lt.StartRequest
+	if err := json.Unmarshal(ctx.Body(), &req); err != nil {
+		return fail(ctx, fiber.StatusBadRequest, "INVALID_BODY", "invalid JSON body: "+err.Error())
+	}
+	if !actionValid(req.Action) {
+		return fail(ctx, fiber.StatusBadRequest, "INVALID_ACTION", "action must be one of search|select|init|confirm")
+	}
+	gen, aerr := c.buildGenerator(req)
+	if aerr != nil {
+		return fail(ctx, aerr.status, aerr.code, aerr.msg)
+	}
+	payload, txn, msg, err := gen.Generate(req.Action)
+	if err != nil {
+		return fail(ctx, fiber.StatusBadRequest, "GENERATE_FAILED", err.Error())
+	}
+	url := strings.TrimRight(req.BPPURI, "/") + "/" + string(req.Action)
+	return ctx.JSON(fiber.Map{
+		"url":            url,
+		"would_sign":     req.Sign && c.cfg.BAPPrivateKey != "",
+		"transaction_id": txn,
+		"message_id":     msg,
+		"delivery":       extractDelivery(payload),
+		"payload":        json.RawMessage(payload),
+	})
+}
+
+// extractDelivery surfaces the fulfillment end gps/area_code for quick scanning.
+func extractDelivery(payload []byte) any {
+	var env struct {
+		Message struct {
+			Order struct {
+				Fulfillments []struct {
+					End struct {
+						Location struct {
+							GPS     string `json:"gps"`
+							Address struct {
+								AreaCode string `json:"area_code"`
+							} `json:"address"`
+						} `json:"location"`
+					} `json:"end"`
+				} `json:"fulfillments"`
+			} `json:"order"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(payload, &env) != nil || len(env.Message.Order.Fulfillments) == 0 {
+		return nil
+	}
+	loc := env.Message.Order.Fulfillments[0].End.Location
+	return fiber.Map{"gps": loc.GPS, "area_code": loc.Address.AreaCode}
 }
 
 func actionValid(a lt.Action) bool {
