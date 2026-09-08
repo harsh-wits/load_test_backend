@@ -85,6 +85,7 @@ type LedgerRow struct {
 	AckStatus     string `json:"ack_status"` // ACK | NACK | none
 	LatencyMs     int64  `json:"client_latency_ms"`
 	Error         string `json:"error,omitempty"`
+	ResponseBody  string `json:"response_body,omitempty"` // captured for non-ACK responses
 }
 
 // RandSource is the minimal RNG surface the generator needs.

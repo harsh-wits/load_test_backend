@@ -154,6 +154,15 @@ func (rn *Runner) sendOne(ctx context.Context, url string, req StartRequest, pay
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		row.Error = "http " + resp.Status
 	}
+	// Capture the seller's response for non-ACK outcomes so the reason
+	// (if the seller returns one) shows up in the ledger.
+	if row.AckStatus != "ACK" && len(body) > 0 {
+		b := body
+		if len(b) > 1024 {
+			b = b[:1024]
+		}
+		row.ResponseBody = string(b)
+	}
 	run.record(row)
 }
 

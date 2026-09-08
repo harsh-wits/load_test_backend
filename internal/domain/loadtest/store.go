@@ -1,6 +1,7 @@
 package loadtest
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -34,6 +35,7 @@ type Run struct {
 	errCount   int
 	latencies  []int64
 	ledger     []LedgerRow
+	nackSample string
 	endedAt    time.Time
 	cancel     func()
 }
@@ -55,8 +57,14 @@ func (r *Run) record(row LedgerRow) {
 		r.ack++
 	case "NACK":
 		r.nack++
+		if r.nackSample == "" {
+			r.nackSample = parseOndcError(row.ResponseBody)
+		}
 	default:
 		r.errCount++
+		if r.nackSample == "" && row.Error != "" {
+			r.nackSample = row.Error
+		}
 	}
 	if row.Error == "" {
 		r.latencies = append(r.latencies, row.LatencyMs)
@@ -119,7 +127,13 @@ func (r *Run) Snapshot() map[string]any {
 	if completed > 0 {
 		badRate := float64(r.nack+r.errCount) / float64(completed)
 		if badRate > 0.05 {
-			warnings = append(warnings, fmt.Sprintf("high NACK/error rate %.0f%% — check bap_uri registration, signing, and payload validity", badRate*100))
+			msg := fmt.Sprintf("high NACK/error rate %.0f%%", badRate*100)
+			if r.nackSample != "" {
+				msg += " — seller says: " + r.nackSample
+			} else {
+				msg += " — check bap_uri registration, signing, and payload validity"
+			}
+			warnings = append(warnings, msg)
 		}
 	}
 
@@ -141,9 +155,38 @@ func (r *Run) Snapshot() map[string]any {
 				"avg": avg, "p50": p50, "p90": p90, "p95": p95, "p99": p99, "min": min, "max": max,
 			},
 		},
-		"slo":      map[string]any{"metric": "p95", "threshold_ms": sloThresholdMs, "pass": pass, "note": "client-side cross-check; seller logs are authoritative"},
-		"warnings": warnings,
+		"slo":         map[string]any{"metric": "p95", "threshold_ms": sloThresholdMs, "pass": pass, "note": "client-side cross-check; seller logs are authoritative"},
+		"warnings":    warnings,
+		"nack_reason": r.nackSample,
 	}
+}
+
+// parseOndcError extracts a compact "code message" from an ONDC NACK body's
+// error object, falling back to a truncated raw body.
+func parseOndcError(body string) string {
+	if body == "" {
+		return ""
+	}
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(body), &env) == nil && (env.Error.Code != "" || env.Error.Message != "") {
+		s := env.Error.Code
+		if env.Error.Message != "" {
+			if s != "" {
+				s += " "
+			}
+			s += env.Error.Message
+		}
+		return s
+	}
+	if len(body) > 160 {
+		return body[:160]
+	}
+	return body
 }
 
 func round2(f float64) float64 {

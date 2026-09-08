@@ -131,6 +131,12 @@ function renderStages(){
     document.querySelector(`.qps[data-a="${a}"]`).disabled=c;
     document.querySelector(`.dur[data-a="${a}"]`).disabled=c;
   }));
+  host.querySelectorAll(".qps,.dur").forEach(inp=>inp.addEventListener("input",e=>{
+    const a=e.target.dataset.a;
+    if(document.querySelector(`.mode[data-a="${a}"]`).value!=="count"){
+      document.querySelector(`.count[data-a="${a}"]`).value = num(`.qps[data-a="${a}"]`)*num(`.dur[data-a="${a}"]`);
+    }
+  }));
   host.querySelectorAll(".run").forEach(b=>b.addEventListener("click",e=>startRun(e.target.dataset.a)));
   host.querySelectorAll(".preview").forEach(b=>b.addEventListener("click",e=>previewRun(e.target.dataset.a)));
   document.getElementById("runAll").addEventListener("click",()=>{
@@ -210,7 +216,8 @@ function render(res, j, id){
   const m = j.metrics||{}; const lat = m.client_latency_ms||{};
   const verdict = j.status==="running" ? `<span class="verdict run">running</span>`
     : (j.slo?.pass ? `<span class="verdict pass">PASS · p95 ${lat.p95}ms</span>` : `<span class="verdict fail">p95 ${lat.p95}ms ≥ 350</span>`);
-  const warn = (j.warnings||[]).map(w=>`<div class="warn">⚠ ${w}</div>`).join("");
+  const warn = (j.warnings||[]).map(w=>`<div class="warn">⚠ ${escapeHtml(w)}</div>`).join("")
+    + (j.nack_reason && !(j.warnings||[]).some(w=>w.includes(j.nack_reason)) ? `<div class="warn">⚠ seller error: ${escapeHtml(j.nack_reason)}</div>` : "");
   res.innerHTML = `
     <div class="row" style="justify-content:space-between">
       <span>${verdict} <span class="muted">status: ${j.status} · ${j.metrics.sent}/${j.planned_requests} sent · ${m.achieved_qps} qps · ${j.elapsed_sec}s</span></span>
