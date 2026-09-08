@@ -12,6 +12,7 @@ import (
 	domainSession "seller_app_load_tester/internal/domain/session"
 	callbackHandlers "seller_app_load_tester/internal/handlers/callbacks"
 	docsHandlers "seller_app_load_tester/internal/handlers/docs"
+	loadtestHandlers "seller_app_load_tester/internal/handlers/loadtest"
 	testingHandlers "seller_app_load_tester/internal/handlers/testing"
 	sessionPorts "seller_app_load_tester/internal/ports/session"
 	"seller_app_load_tester/internal/ports/seller"
@@ -119,6 +120,8 @@ func (c *Container) RegisterRoutes(app *fiber.App) error {
 			SigningUniqueKeyID:      c.cfg.BAPUniqueKeyID,
 		},
 	).Register(app)
+
+	loadtestHandlers.NewController(c.cfg).Register(app)
 
 	return nil
 }

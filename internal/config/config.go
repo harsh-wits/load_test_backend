@@ -54,6 +54,12 @@ type Config struct {
 
 	RegistryBaseURL         string
 	RegistryCacheTTLSeconds int
+
+	// Load-tester (independent endpoint blasting) mode.
+	LoadTestMaxQPS          int
+	LoadTestMaxDurationSec  int
+	LoadTestMaxRequests     int
+	LoadTestRequestTimeoutMs int
 }
 
 func Load() (*Config, error) {
@@ -104,6 +110,11 @@ func Load() (*Config, error) {
 
 		RegistryBaseURL:         getEnv("REGISTRY_BASE_URL", ""),
 		RegistryCacheTTLSeconds: getEnvInt("REGISTRY_CACHE_TTL_SECONDS", 600),
+
+		LoadTestMaxQPS:           getEnvInt("LOADTEST_MAX_QPS", 500),
+		LoadTestMaxDurationSec:   getEnvInt("LOADTEST_MAX_DURATION_SEC", 120),
+		LoadTestMaxRequests:      getEnvInt("LOADTEST_MAX_REQUESTS", 100000),
+		LoadTestRequestTimeoutMs: getEnvInt("LOADTEST_REQUEST_TIMEOUT_MS", 5000),
 	}
 
 	if err := os.MkdirAll(cfg.RunsFSRoot, 0o755); err != nil {

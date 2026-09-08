@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ONDC Endpoint Load Tester</title>
+<style>
+  :root { --bg:#0f1420; --card:#182234; --line:#2a3550; --fg:#e6ecf5; --mut:#94a3b8; --acc:#4f8cff; --ok:#22c55e; --bad:#ef4444; --warn:#f59e0b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:16px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  .pill { font-size:12px; padding:3px 9px; border-radius:20px; background:#233; color:var(--mut); }
+  .pill.on { background:rgba(34,197,94,.15); color:var(--ok); }
+  .pill.off { background:rgba(239,68,68,.15); color:var(--bad); }
+  main { padding:18px 20px; max-width:1100px; margin:0 auto; }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  .panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:var(--mut); margin:0 0 12px; }
+  label { display:block; font-size:12px; color:var(--mut); margin-bottom:4px; }
+  input, select, textarea { width:100%; background:#0e1626; border:1px solid var(--line); color:var(--fg); border-radius:7px; padding:8px 10px; font:inherit; }
+  textarea { min-height:110px; font-family:ui-monospace,Menlo,monospace; font-size:12px; }
+  .grid { display:grid; gap:12px; }
+  .g2 { grid-template-columns:1fr 1fr; } .g3 { grid-template-columns:1fr 1fr 1fr; } .g4 { grid-template-columns:repeat(4,1fr); }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  button { background:var(--acc); color:#fff; border:0; border-radius:7px; padding:9px 16px; font:inherit; font-weight:600; cursor:pointer; }
+  button.sec { background:#26324a; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .stage { border:1px solid var(--line); border-radius:9px; padding:12px; margin-bottom:10px; }
+  .stage-head { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .stage-head b { font-size:14px; } .stage-head .q { color:var(--mut); font-size:12px; }
+  .res { margin-top:10px; font-size:13px; display:none; }
+  .res.show { display:block; }
+  .metrics { display:grid; grid-template-columns:repeat(6,1fr); gap:8px; margin:8px 0; }
+  .m { background:#0e1626; border:1px solid var(--line); border-radius:7px; padding:7px 9px; }
+  .m .k { font-size:10px; color:var(--mut); text-transform:uppercase; } .m .v { font-size:16px; font-weight:600; }
+  .verdict { display:inline-block; padding:3px 10px; border-radius:6px; font-weight:700; font-size:12px; }
+  .verdict.pass { background:rgba(34,197,94,.15); color:var(--ok); } .verdict.fail { background:rgba(239,68,68,.15); color:var(--bad); } .verdict.run { background:rgba(79,140,255,.15); color:var(--acc); }
+  .warn { color:var(--warn); font-size:12px; margin-top:6px; }
+  .muted { color:var(--mut); font-size:12px; }
+  a { color:var(--acc); }
+</style>
+</head>
+<body>
+<header>
+  <h1>ONDC Endpoint Load Tester</h1>
+  <span id="signPill" class="pill">signing: …</span>
+  <span id="bapPill" class="pill"></span>
+  <span class="pill">SLO p95 &lt; 350ms (client-side)</span>
+</header>
+<main>
+  <div class="panel">
+    <h2>Target &amp; catalog</h2>
+    <div class="grid g2">
+      <div><label>bpp_id</label><input id="bppId" placeholder="preprod.tipplr.in" /></div>
+      <div><label>bpp_uri</label><input id="bppUri" placeholder="https://preprod.tipplr.in/ondc/v2" /></div>
+    </div>
+    <div style="margin-top:12px"><label>on_search (catalog JSON — used to generate select / init / confirm)</label><textarea id="onSearch" placeholder="paste an on_search response here"></textarea></div>
+    <div class="row" style="margin-top:10px">
+      <label style="margin:0"><input type="checkbox" id="sign" checked style="width:auto" /> sign requests</label>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Randomization</h2>
+    <div class="grid g4">
+      <div><label>provider</label><select id="rProvider"><option value="first">first</option><option value="random">random</option></select></div>
+      <div><label>pickup location</label><select id="rLocation"><option value="first">first</option><option value="random">random</option></select></div>
+      <div><label>delivery point</label><select id="rDelivery"><option value="store">store gps (in-zone)</option><option value="random">random in serviceable zone</option></select></div>
+      <div><label>seed (blank = random)</label><input id="rSeed" placeholder="e.g. 42" /></div>
+    </div>
+    <div class="grid g4" style="margin-top:12px">
+      <div><label>items/order min</label><input id="rItemMin" type="number" value="1" min="1" /></div>
+      <div><label>items/order max</label><input id="rItemMax" type="number" value="3" min="1" /></div>
+      <div><label>quantity per item</label><input id="rQty" type="number" value="1" min="1" /></div>
+      <div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Endpoints</h2>
+    <div id="stages"></div>
+    <div class="row" style="margin-top:6px"><button id="runAll">Run all enabled</button></div>
+  </div>
+</main>
+
+<script>
+const STAGES = [
+  { action:"select",  qps:300, dur:30 },
+  { action:"init",    qps:100, dur:30 },
+  { action:"confirm", qps:20,  dur:30 },
+  { action:"search",  qps:50,  dur:30 },
+];
+let CFG = {};
+
+async function boot(){
+  try {
+    CFG = await (await fetch("/loadtest/config")).json();
+    const sp = document.getElementById("signPill");
+    sp.textContent = "signing: " + (CFG.signing_enabled ? "on" : "off");
+    sp.className = "pill " + (CFG.signing_enabled ? "on" : "off");
+    document.getElementById("bapPill").textContent = CFG.bap_id ? ("bap: " + CFG.bap_id) : "";
+    document.getElementById("sign").checked = !!CFG.signing_enabled;
+  } catch(e){}
+  renderStages();
+}
+
+function renderStages(){
+  const host = document.getElementById("stages");
+  host.innerHTML = "";
+  for (const s of STAGES){
+    const el = document.createElement("div");
+    el.className = "stage";
+    el.innerHTML = `
+      <div class="stage-head">
+        <label style="margin:0"><input type="checkbox" class="en" data-a="${s.action}" ${s.action==="search"?"":"checked"} style="width:auto"/> </label>
+        <b>${s.action}</b><span class="q">/ on_${s.action}</span>
+      </div>
+      <div class="grid g4">
+        <div><label>mode</label><select class="mode" data-a="${s.action}"><option value="qps">qps × duration</option><option value="count">exact count</option></select></div>
+        <div><label>qps</label><input class="qps" data-a="${s.action}" type="number" value="${s.qps}"/></div>
+        <div><label>duration (s)</label><input class="dur" data-a="${s.action}" type="number" value="${s.dur}"/></div>
+        <div><label>count</label><input class="count" data-a="${s.action}" type="number" value="${s.qps*s.dur}" disabled/></div>
+      </div>
+      <div class="row" style="margin-top:10px"><button class="run" data-a="${s.action}">Run ${s.action}</button><button class="sec preview" data-a="${s.action}">Preview payload</button></div>
+      <div class="res" id="res-${s.action}"></div>`;
+    host.appendChild(el);
+  }
+  host.querySelectorAll(".mode").forEach(m=>m.addEventListener("change",e=>{
+    const a=e.target.dataset.a, c=e.target.value==="count";
+    document.querySelector(`.count[data-a="${a}"]`).disabled=!c;
+    document.querySelector(`.qps[data-a="${a}"]`).disabled=c;
+    document.querySelector(`.dur[data-a="${a}"]`).disabled=c;
+  }));
+  host.querySelectorAll(".qps,.dur").forEach(inp=>inp.addEventListener("input",e=>{
+    const a=e.target.dataset.a;
+    if(document.querySelector(`.mode[data-a="${a}"]`).value!=="count"){
+      document.querySelector(`.count[data-a="${a}"]`).value = num(`.qps[data-a="${a}"]`)*num(`.dur[data-a="${a}"]`);
+    }
+  }));
+  host.querySelectorAll(".run").forEach(b=>b.addEventListener("click",e=>startRun(e.target.dataset.a)));
+  host.querySelectorAll(".preview").forEach(b=>b.addEventListener("click",e=>previewRun(e.target.dataset.a)));
+  document.getElementById("runAll").addEventListener("click",()=>{
+    document.querySelectorAll(".en").forEach(en=>{ if(en.checked) startRun(en.dataset.a); });
+  });
+}
+
+function num(sel){ const v=parseInt(document.querySelector(sel).value,10); return isNaN(v)?0:v; }
+
+function buildBody(action){
+  const body = {
+    action,
+    bpp_id: document.getElementById("bppId").value.trim(),
+    bpp_uri: document.getElementById("bppUri").value.trim(),
+    sign: document.getElementById("sign").checked,
+    randomize: {
+      provider: document.getElementById("rProvider").value,
+      location: document.getElementById("rLocation").value,
+      delivery: document.getElementById("rDelivery").value,
+      item_count: { min:num("#rItemMin"), max:num("#rItemMax") },
+      quantity: { fixed:num("#rQty") },
+    },
+  };
+  const seed = document.getElementById("rSeed").value.trim();
+  if (seed) body.randomize.seed = parseInt(seed,10);
+  const mode = document.querySelector(`.mode[data-a="${action}"]`).value;
+  if (mode==="count"){ body.count = num(`.count[data-a="${action}"]`); }
+  else { body.qps = num(`.qps[data-a="${action}"]`); body.duration_sec = num(`.dur[data-a="${action}"]`); }
+  const os = document.getElementById("onSearch").value.trim();
+  if (os){ try { body.on_search = JSON.parse(os); } catch(e){ throw new Error("on_search is not valid JSON"); } }
+  return body;
+}
+
+function escapeHtml(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+async function previewRun(action){
+  const res = document.getElementById("res-"+action);
+  res.className="res show";
+  let body;
+  try { body = buildBody(action); } catch(e){ res.innerHTML = `<span class="warn">${e.message}</span>`; return; }
+  res.innerHTML = `<span class="muted">generating…</span>`;
+  try {
+    const r = await fetch("/loadtest/preview",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const j = await r.json();
+    if(!r.ok){ res.innerHTML = `<span class="warn">${j.error?.message||"error"}</span>`; return; }
+    res.innerHTML = `<div class="muted">POST ${j.url} · signed: ${j.would_sign} · delivery gps <b>${j.delivery?.gps||"—"}</b> / area_code <b>${j.delivery?.area_code||"—"}</b></div>
+      <pre style="max-height:340px;overflow:auto;background:#0e1626;border:1px solid var(--line);border-radius:7px;padding:10px;font-size:12px">${escapeHtml(JSON.stringify(j.payload,null,2))}</pre>`;
+  } catch(e){ res.innerHTML = `<span class="warn">${e.message}</span>`; }
+}
+
+async function startRun(action){
+  const res = document.getElementById("res-"+action);
+  res.className="res show";
+  let body;
+  try { body = buildBody(action); } catch(e){ res.innerHTML = `<span class="warn">${e.message}</span>`; return; }
+  res.innerHTML = `<span class="verdict run">starting…</span>`;
+  try {
+    const r = await fetch("/loadtest",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const j = await r.json();
+    if(!r.ok){ res.innerHTML = `<span class="warn">${j.error?.message||"error"}</span>`; return; }
+    poll(action, j.run_id);
+  } catch(e){ res.innerHTML = `<span class="warn">${e.message}</span>`; }
+}
+
+function poll(action, id){
+  const res = document.getElementById("res-"+action);
+  const tick = async ()=>{
+    let j;
+    try { j = await (await fetch("/loadtest/"+id)).json(); } catch(e){ return; }
+    render(res, j, id);
+    if (j.status==="running"){ setTimeout(tick, 1000); }
+  };
+  tick();
+}
+
+function render(res, j, id){
+  const m = j.metrics||{}; const lat = m.client_latency_ms||{};
+  const verdict = j.status==="running" ? `<span class="verdict run">running</span>`
+    : (j.slo?.pass ? `<span class="verdict pass">PASS · p95 ${lat.p95}ms</span>` : `<span class="verdict fail">p95 ${lat.p95}ms ≥ 350</span>`);
+  const warn = (j.warnings||[]).map(w=>`<div class="warn">⚠ ${escapeHtml(w)}</div>`).join("")
+    + (j.nack_reason && !(j.warnings||[]).some(w=>w.includes(j.nack_reason)) ? `<div class="warn">⚠ seller error: ${escapeHtml(j.nack_reason)}</div>` : "");
+  res.innerHTML = `
+    <div class="row" style="justify-content:space-between">
+      <span>${verdict} <span class="muted">status: ${j.status} · ${j.metrics.sent}/${j.planned_requests} sent · ${m.achieved_qps} qps · ${j.elapsed_sec}s</span></span>
+      <span><a href="/loadtest/${id}/ledger?format=csv">ledger.csv</a> · <a href="/loadtest/${id}/ledger?format=json">json</a></span>
+    </div>
+    <div class="metrics">
+      <div class="m"><div class="k">ACK</div><div class="v" style="color:var(--ok)">${m.ack}</div></div>
+      <div class="m"><div class="k">NACK</div><div class="v" style="color:var(--warn)">${m.nack}</div></div>
+      <div class="m"><div class="k">error</div><div class="v" style="color:var(--bad)">${m.error}</div></div>
+      <div class="m"><div class="k">avg ms</div><div class="v">${lat.avg}</div></div>
+      <div class="m"><div class="k">p95 ms</div><div class="v">${lat.p95}</div></div>
+      <div class="m"><div class="k">max ms</div><div class="v">${lat.max}</div></div>
+    </div>${warn}`;
+}
+
+boot();
+</script>
+</body>
+</html>
