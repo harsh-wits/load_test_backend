@@ -2,6 +2,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: seller-load-tester-redis
+    restart: unless-stopped
     ports:
       - "6380:6379"
     command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-change-me}"]
@@ -10,6 +11,7 @@ services:
     # image: mongo:6.0
     image: mongo:7
     container_name: seller-load-tester-mongo
+    restart: unless-stopped
     command: ["mongod", "--bind_ip_all"]
     ulimits:
       nofile:
@@ -26,13 +28,22 @@ services:
     volumes:
       - mongo-data:/data/db
       - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
 
   app:
     build: .
     container_name: seller-load-tester-app
+    restart: unless-stopped
     depends_on:
-      - redis
-      - mongo
+      redis:
+        condition: service_started
+      mongo:
+        condition: service_healthy
     environment:
       - HTTP_PORT=8080
       - REDIS_URL=seller-load-tester-redis:6379
