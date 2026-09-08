@@ -21,6 +21,9 @@ func main() {
 
 	app := fiber.New(fiber.Config{
 		ErrorHandler: apierror.ErrorHandler(),
+		// Large ONDC on_search catalogs (thousands of items) are posted
+		// inline to the load-tester; default 4MB is too small.
+		BodyLimit: 64 * 1024 * 1024,
 	})
 
 	app.Use(cors.New(cors.Config{

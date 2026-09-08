@@ -133,6 +133,40 @@ func TestDeliveryRandomStaysWithinRadius(t *testing.T) {
 	}
 }
 
+func TestGenerateSkipsCustomizationItems(t *testing.T) {
+	// Catalog with one base item and one customization item (":" id).
+	os := `{"context":{"domain":"ONDC:RET11"},"message":{"catalog":{"bpp/providers":[{
+      "id":"P1","locations":[{"id":"L1","gps":"12.9,77.6","address":{"area_code":"560001"}}],
+      "fulfillments":[{"id":"F1","type":"Delivery"}],
+      "items":[
+        {"id":"BASE","price":{"value":"100"},"location_id":"L1"},
+        {"id":"BASE:CUST","price":{"value":"10"},"location_id":"L1"}
+      ]}]}}}`
+	cat, err := ParseCatalog([]byte(os))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cat.Providers[0].Items[1].IsCustomization || cat.Providers[0].Items[0].IsCustomization {
+		t.Fatalf("customization classification wrong: %+v", cat.Providers[0].Items)
+	}
+	// Over many generations, only BASE must ever be selected.
+	g := NewGenerator(cat, genCtx(), RandomizeConfig{ItemCount: fixed(1), Quantity: fixed(1)}, rng())
+	for i := 0; i < 100; i++ {
+		b, _, _, err := g.Generate(ActionSelect)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var env map[string]any
+		_ = json.Unmarshal(b, &env)
+		items := env["message"].(map[string]any)["order"].(map[string]any)["items"].([]any)
+		for _, it := range items {
+			if id := it.(map[string]any)["id"].(string); id != "BASE" {
+				t.Fatalf("selected non-base item %q", id)
+			}
+		}
+	}
+}
+
 func TestPointInPolygon(t *testing.T) {
 	square := [][]LngLat{{{77.0, 12.0}, {78.0, 12.0}, {78.0, 13.0}, {77.0, 13.0}, {77.0, 12.0}}}
 	if !pointInRing(77.5, 12.5, square[0]) {

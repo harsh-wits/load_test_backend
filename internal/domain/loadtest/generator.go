@@ -115,26 +115,41 @@ func (g *Generator) chooseItems(p *Provider, locID string) []itemSel {
 	if len(p.Items) == 0 {
 		return nil
 	}
+	// Order only base items. Customization items (id "base:cust" or
+	// type=customization) are not standalone-orderable — selecting one without
+	// its parent produces an invalid select that sellers reject or hang on.
+	pool := make([]int, 0, len(p.Items))
+	for i := range p.Items {
+		if !p.Items[i].IsCustomization {
+			pool = append(pool, i)
+		}
+	}
+	if len(pool) == 0 {
+		for i := range p.Items {
+			pool = append(pool, i)
+		}
+	}
+
 	maxN := 3
-	if len(p.Items) < maxN {
-		maxN = len(p.Items)
+	if len(pool) < maxN {
+		maxN = len(pool)
 	}
 	n := g.rnd.ItemCount.pick(g.rng, 1+g.rng.Intn(maxN))
 	if n < 1 {
 		n = 1
 	}
-	if n > len(p.Items) {
-		n = len(p.Items)
+	if n > len(pool) {
+		n = len(pool)
 	}
-	perm := g.rng.Perm(len(p.Items))[:n]
+	sel := g.rng.Perm(len(pool))[:n]
 
 	fulfillmentID := ""
 	if len(p.Fulfillments) > 0 {
 		fulfillmentID = p.Fulfillments[0].ID
 	}
 	out := make([]itemSel, 0, n)
-	for _, idx := range perm {
-		it := p.Items[idx]
+	for _, k := range sel {
+		it := p.Items[pool[k]]
 		fid := it.FulfillmentID
 		if fid == "" {
 			fid = fulfillmentID

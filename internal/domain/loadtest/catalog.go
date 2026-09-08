@@ -28,13 +28,14 @@ type Location struct {
 }
 
 type Item struct {
-	ID            string
-	PriceValue    string
-	Currency      string
-	LocationID    string
-	FulfillmentID string
-	ParentItemID  string
-	Tags          json.RawMessage // preserved verbatim (keeps customization structure)
+	ID              string
+	PriceValue      string
+	Currency        string
+	LocationID      string
+	FulfillmentID   string
+	ParentItemID    string
+	Tags            json.RawMessage // preserved verbatim (keeps customization structure)
+	IsCustomization bool            // true for "base:cust" ids / type=customization items
 }
 
 type Fulfillment struct {
@@ -108,6 +109,7 @@ func ParseCatalog(onSearch []byte) (*Catalog, error) {
 				ID: it.ID, PriceValue: it.Price.Value, Currency: it.Price.Currency,
 				LocationID: it.LocationID, FulfillmentID: it.FulfillmentID,
 				ParentItemID: it.ParentItemID, Tags: it.Tags,
+				IsCustomization: strings.Contains(it.ID, ":") || itemTaggedCustomization(it.Tags),
 			})
 		}
 		prov.Serviceability = parseServiceability(p.Tags)
@@ -212,6 +214,34 @@ func parseGeoJSONPolygon(val string) [][]LngLat {
 		}
 	}
 	return out
+}
+
+// itemTaggedCustomization reports whether an item's tags declare type=customization.
+func itemTaggedCustomization(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var tags []struct {
+		Code string `json:"code"`
+		List []struct {
+			Code  string `json:"code"`
+			Value string `json:"value"`
+		} `json:"list"`
+	}
+	if json.Unmarshal(raw, &tags) != nil {
+		return false
+	}
+	for _, t := range tags {
+		if t.Code != "type" {
+			continue
+		}
+		for _, kv := range t.List {
+			if kv.Code == "type" && kv.Value == "customization" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func parseGPS(s string) (lat, lng float64, ok bool) {
